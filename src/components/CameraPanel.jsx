@@ -206,7 +206,10 @@ export default function CameraPanel() {
             const ctx = canvas.getContext('2d')
             ctx.clearRect(0, 0, W, H)
 
-            // ── Hand tracker tick ──────────────────────────────
+            // ── Send video frame to MediaPipe (non-blocking) ───
+            handTrackerRef.current?.processFrame()
+
+            // ── Hand tracker grace period tick ─────────────────
             handTrackerRef.current?.tick(graceMs)
 
             // ── Zone tracker (dwell) ───────────────────────────
@@ -398,9 +401,11 @@ export default function CameraPanel() {
                 if (isSpeaking) return
                 setVoiceTranscript(transcript)
                 setTimeout(() => setVoiceTranscript(''), 2500)
-                if (/\bscan\s+this\b/.test(transcript)) {
+                // Scan triggers: "scan this", "scan", "scan item", "take a picture", "capture"
+                if (/\b(?:scan(?:\s+(?:this|it|item|now))?|take\s+a?\s*(?:picture|photo|picture)|capture)\b/.test(transcript)) {
                     handleScanRef.current?.()
                 } else {
+                    // Find triggers: "find X", "locate X", "where is X", "where's my X"
                     const findMatch = transcript.match(/(?:find|locate|where(?:'s| is)(?: (?:my|the))?)\s+(.+)/)
                     if (findMatch) findItemRef.current?.(findMatch[1].trim())
                 }
