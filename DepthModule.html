@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TrackHive · Depth-Aware Zone Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#080808;--surf:#0f0f0f;--surf2:#161616;--surf3:#1e1e1e;
+  --border:#272727;--border2:#333;
+  --amber:#f59e0b;--green:#22c55e;--red:#ef4444;--sky:#0ea5e9;--violet:#8b5cf6;--pink:#ec4899;
+  --text:#e2e2e2;--muted:#555;--muted2:#3a3a3a;
+  --mono:'JetBrains Mono','Courier New',monospace;
+  --display:'Syne',sans-serif;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--mono);overflow:hidden}
+
+/* TOP BAR */
+#topbar{height:48px;background:var(--surf);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:10px;flex-shrink:0}
+#logo{font-family:var(--display);font-weight:800;font-size:16px;letter-spacing:-.5px;color:#fff;white-space:nowrap}
+#logo span{color:var(--amber)}
+#topbar-status{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbtn{height:30px;padding:0 11px;font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;border-radius:4px;border:1px solid var(--border2);background:var(--surf2);color:var(--text);cursor:pointer;transition:all .15s;white-space:nowrap;flex-shrink:0}
+.topbtn:hover{background:var(--surf3);border-color:var(--muted)}
+.topbtn.active{background:rgba(245,158,11,.15);color:var(--amber);border-color:var(--amber)}
+.topbtn.danger{border-color:var(--red);color:var(--red)}
+.topbtn.danger:hover{background:var(--red);color:#fff}
+
+/* LAYOUT */
+#main{display:flex;height:calc(100vh - 48px)}
+
+/* CAMERA */
+#camera-panel{flex:1 1 0;min-width:0;position:relative;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
+#video{width:100%;height:100%;object-fit:cover;display:block}
+#zone-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#draw-overlay{position:absolute;inset:0;cursor:crosshair;display:none}
+#camera-panel.draw-mode #draw-overlay{display:block}
+#camera-panel::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.025) 2px,rgba(0,0,0,.025) 4px);pointer-events:none;z-index:10}
+.corner{position:absolute;width:18px;height:18px;pointer-events:none;z-index:15}
+.corner-tl{top:10px;left:10px;border-top:2px solid var(--amber);border-left:2px solid var(--amber)}
+.corner-tr{top:10px;right:10px;border-top:2px solid var(--amber);border-right:2px solid var(--amber)}
+.corner-bl{bottom:10px;left:10px;border-bottom:2px solid var(--amber);border-left:2px solid var(--amber)}
+.corner-br{bottom:10px;right:10px;border-bottom:2px solid var(--amber);border-right:2px solid var(--amber)}
+#cam-offline{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:#030303;color:var(--muted);font-size:11px;text-align:center}
+#cam-offline.show{display:flex}
+#cam-offline .icon{font-size:36px;opacity:.3}
+#grace-pill{position:absolute;bottom:10px;left:10px;z-index:20;font-size:9px;color:var(--amber);background:rgba(0,0,0,.65);border:1px solid rgba(245,158,11,.35);border-radius:4px;padding:3px 8px;display:none;letter-spacing:.8px}
+#grace-pill.show{display:block}
+
+/* OVERLAYS */
+.modal-bg{position:absolute;inset:0;background:rgba(0,0,0,.87);display:none;align-items:center;justify-content:center;z-index:50;backdrop-filter:blur(3px)}
+.modal-bg.show{display:flex}
+.modal-card{background:var(--surf);border:1px solid var(--border2);border-radius:12px;padding:26px;width:390px;max-width:92%}
+.modal-tag{display:inline-block;font-size:9px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--amber);background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.25);padding:3px 8px;border-radius:3px;margin-bottom:12px}
+.modal-title{font-family:var(--display);font-size:20px;font-weight:800;color:#fff;margin-bottom:6px}
+.modal-sub{font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:18px}
+.step-row{display:flex;align-items:center;margin-bottom:20px}
+.step-dot{width:26px;height:26px;border-radius:50%;background:var(--surf3);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--muted);flex-shrink:0;transition:all .3s}
+.step-dot.active{background:var(--amber);color:#000;box-shadow:0 0 0 4px rgba(245,158,11,.2)}
+.step-dot.done{background:var(--green);color:#000}
+.step-line{flex:1;height:2px;background:var(--surf3);transition:background .3s;margin:0 4px}
+.step-line.done{background:var(--green)}
+.instr-box{background:var(--surf2);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px}
+.instr-icon{font-size:26px;margin-bottom:7px}
+.instr-title{font-size:12px;font-weight:600;color:#fff;margin-bottom:4px}
+.instr-body{font-size:11px;color:var(--muted);line-height:1.6}
+.prog-wrap{position:relative;height:34px;background:var(--surf3);border-radius:6px;overflow:hidden;display:flex;align-items:center;margin-bottom:12px}
+.prog-fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--amber),#f97316);transition:width .08s linear;border-radius:6px}
+.prog-label{position:relative;z-index:1;font-size:11px;font-weight:600;color:#fff;padding:0 14px}
+.mbtn{width:100%;height:38px;border:none;border-radius:7px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;margin-bottom:7px;transition:opacity .15s}
+.mbtn.amber{background:var(--amber);color:#000}
+.mbtn.green{background:var(--green);color:#000}
+.mbtn.sky{background:var(--sky);color:#000}
+.mbtn:hover{opacity:.88}
+.mskip{width:100%;height:32px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:10px;cursor:pointer;transition:all .15s}
+.mskip:hover{background:var(--surf2);color:var(--text)}
+.mwarn{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:6px;padding:7px 11px;font-size:11px;color:var(--amber);margin-bottom:11px}
+.merror{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:9px 12px;font-size:11px;color:#fca5a5;margin-bottom:12px;line-height:1.6}
+.msuccess{text-align:center;padding:18px 0}
+.msuccess .sico{font-size:36px;display:block;margin-bottom:7px}
+.msuccess p{color:var(--green);font-size:13px;font-weight:600}
+.msuccess small{color:var(--muted);font-size:10px;display:block;margin-top:3px}
+
+/* DEPTH VIZ (zone depth modal) */
+.depth-viz{background:var(--surf2);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px}
+.dv-labels{display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-bottom:6px}
+.dv-track{height:10px;background:var(--surf3);border-radius:5px;position:relative;overflow:visible}
+.dv-range{position:absolute;top:0;bottom:0;background:rgba(14,165,233,.25);border:1px solid var(--sky);border-radius:5px;transition:all .1s}
+.dv-cursor{position:absolute;top:-4px;width:18px;height:18px;border-radius:50%;background:var(--amber);border:2px solid var(--surf2);transform:translateX(-50%);transition:left .06s;box-shadow:0 0 8px var(--amber)}
+.dv-target{position:absolute;top:-5px;width:2px;height:20px;background:var(--sky);transform:translateX(-50%);transition:left .1s}
+.dv-foot{display:flex;justify-content:space-between;font-size:9px;color:var(--muted2);margin-top:5px}
+.tol-row{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:10px}
+.tol-lbl{color:var(--muted);flex:1}
+.tol-val{color:var(--sky);font-weight:600;width:38px;text-align:right}
+.tol-slider{flex:2;height:4px;-webkit-appearance:none;appearance:none;background:var(--surf3);border-radius:2px;outline:none}
+.tol-slider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--sky);cursor:pointer;border:2px solid var(--surf2)}
+.zdm-zone-tag{display:inline-block;background:rgba(14,165,233,.1);border:1px solid rgba(14,165,233,.25);color:var(--sky);font-size:10px;font-weight:600;padding:2px 8px;border-radius:3px;margin-bottom:12px}
+
+/* ZONE NAME INPUT */
+#zone-name-wrap{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:none;z-index:40;background:var(--surf);border:1px solid var(--amber);border-radius:8px;padding:10px 12px;gap:7px;align-items:center;min-width:280px;box-shadow:0 8px 32px rgba(0,0,0,.6)}
+#zone-name-wrap.show{display:flex}
+#zone-name-input{flex:1;background:var(--surf2);border:1px solid var(--border2);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px;padding:6px 9px;outline:none}
+#zone-name-input:focus{border-color:var(--amber)}
+.znbtn{height:29px;padding:0 11px;font-family:var(--mono);font-size:10px;font-weight:700;border-radius:4px;border:none;cursor:pointer}
+#zone-save-btn{background:var(--amber);color:#000}
+#zone-cancel-btn{background:transparent;color:var(--muted);border:1px solid var(--border)}
+
+/* DATA PANEL */
+#data-panel{width:288px;flex-shrink:0;background:var(--surf);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+#data-scroll{flex:1;overflow-y:auto;padding:9px;display:flex;flex-direction:column;gap:7px}
+#data-scroll::-webkit-scrollbar{width:3px}
+#data-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+.db{background:var(--surf2);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.db-hdr{padding:5px 10px;font-size:8px;font-weight:600;letter-spacing:1.8px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surf3)}
+.dr{display:flex;justify-content:space-between;align-items:center;padding:5px 10px;border-bottom:1px solid var(--border);font-size:10px}
+.dr:last-child{border-bottom:none}
+.dk{color:var(--muted)}
+.dv{color:var(--text);font-weight:600;text-align:right;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dv.a{color:var(--amber)}.dv.g{color:var(--green)}.dv.r{color:var(--red)}.dv.s{color:var(--sky)}.dv.m{color:var(--muted)}
+#depth-display{margin:7px 10px;height:36px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-family:var(--display);font-size:13px;font-weight:800;transition:background .25s,color .25s}
+
+/* palm bar */
+.palm-bar-wrap{padding:5px 10px 9px;border-bottom:1px solid var(--border)}
+.pb-labels{display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-bottom:4px}
+.pb-track{height:6px;background:var(--surf3);border-radius:3px;position:relative;overflow:visible}
+.pb-range{position:absolute;top:0;bottom:0;background:rgba(14,165,233,.2);border-radius:3px;transition:all .1s}
+.pb-cur{position:absolute;top:-4px;width:14px;height:14px;border-radius:50%;background:var(--amber);border:2px solid var(--surf2);transform:translateX(-50%);box-shadow:0 0 6px var(--amber);transition:left .06s;display:none}
+
+/* dwell bar */
+.dwell-bg{margin:4px 10px 8px;height:5px;background:var(--surf3);border-radius:3px;overflow:hidden}
+.dwell-fg{height:100%;background:var(--green);border-radius:3px;transition:width .08s linear;width:0%}
+
+/* zone list */
+.zi{border-bottom:1px solid var(--border)}
+.zi:last-child{border-bottom:none}
+.zi-top{display:flex;align-items:center;padding:6px 8px;gap:6px}
+.zi.active .zi-top{background:rgba(34,197,94,.05)}
+.zi-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.zi-name{flex:1;font-size:10px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{font-size:8px;padding:1px 5px;border-radius:3px;flex-shrink:0}
+.badge-active{color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25)}
+.badge-depth{color:var(--sky);background:rgba(14,165,233,.1);border:1px solid rgba(14,165,233,.25)}
+.badge-nodepth{color:var(--muted);background:var(--surf3);border:1px solid var(--border)}
+.zi-actions{display:flex;gap:4px;padding:0 8px 6px}
+.za{flex:1;height:21px;font-family:var(--mono);font-size:9px;font-weight:600;border-radius:3px;border:1px solid var(--border2);background:var(--surf3);color:var(--muted);cursor:pointer;transition:all .1s;letter-spacing:.2px}
+.za:hover{background:var(--surf2);color:var(--text);border-color:var(--muted)}
+.za.depth:hover{color:var(--sky);border-color:var(--sky)}
+.za.del:hover{background:var(--red);color:#fff;border-color:var(--red)}
+.za.sampling{color:var(--amber);border-color:var(--amber);animation:blink 1s ease infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.55}}
+
+/* settings */
+.sr{padding:7px 10px;border-bottom:1px solid var(--border)}
+.sr:last-child{border-bottom:none}
+.sl{font-size:9px;color:var(--muted);letter-spacing:.4px;margin-bottom:4px;display:flex;justify-content:space-between}
+.sl span{color:var(--amber);font-weight:600}
+.sslider{width:100%;height:4px;-webkit-appearance:none;appearance:none;background:var(--surf3);border-radius:2px;outline:none}
+.sslider::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:var(--amber);cursor:pointer;border:2px solid var(--surf2)}
+.toggle-row{display:flex;align-items:center;gap:8px;font-size:10px}
+.toggle-row label{flex:1;color:var(--muted)}
+.tog{position:relative;display:inline-block;width:30px;height:17px}
+.tog input{opacity:0;width:0;height:0}
+.tog-sl{position:absolute;inset:0;background:var(--surf3);border-radius:9px;cursor:pointer;transition:background .2s}
+.tog-sl::before{content:'';position:absolute;width:11px;height:11px;left:3px;top:3px;background:var(--muted);border-radius:50%;transition:all .2s}
+.tog input:checked+.tog-sl{background:rgba(34,197,94,.25)}
+.tog input:checked+.tog-sl::before{background:var(--green);transform:translateX(13px)}
+
+/* event log */
+#event-log{max-height:105px;overflow-y:auto}
+#event-log::-webkit-scrollbar{width:3px}
+#event-log::-webkit-scrollbar-thumb{background:var(--border2)}
+.ei{padding:4px 10px;font-size:9px;color:var(--muted);border-bottom:1px solid var(--border)}
+.ei:last-child{border-bottom:none}
+.et{color:var(--muted2);margin-right:5px}
+.eg{color:var(--green)}.ea{color:var(--amber)}
+
+/* notifications */
+#notif-area{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:60;display:flex;flex-direction:column;gap:5px;align-items:center;pointer-events:none}
+.notif{background:var(--surf);border:1px solid var(--border2);border-radius:6px;padding:6px 13px;font-size:11px;font-weight:600;color:#fff;box-shadow:0 4px 18px rgba(0,0,0,.5);animation:nIn .18s ease,nOut .28s ease 2.7s forwards;white-space:nowrap}
+.notif.green{border-color:var(--green);color:var(--green);background:rgba(34,197,94,.07)}
+.notif.amber{border-color:var(--amber);color:var(--amber);background:rgba(245,158,11,.07)}
+@keyframes nIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes nOut{from{opacity:1}to{opacity:0;transform:translateY(-6px)}}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <div id="logo">TRACK<span>HIVE</span></div>
+  <div id="topbar-status">DEPTH-AWARE ZONE TRACKER · v3</div>
+  <button class="topbtn" onclick="startCal()">⊕ Calibrate Depth</button>
+  <button class="topbtn" id="btn-draw" onclick="toggleDraw()">✎ Draw Zone</button>
+  <button class="topbtn danger" onclick="clearZones()">✕ Clear Zones</button>
+</div>
+
+<div id="main">
+  <!-- ── CAMERA ── -->
+  <div id="camera-panel">
+    <div class="corner corner-tl"></div><div class="corner corner-tr"></div>
+    <div class="corner corner-bl"></div><div class="corner corner-br"></div>
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="zone-canvas"></canvas>
+    <div id="draw-overlay"></div>
+    <div id="cam-offline"><div class="icon">📷</div><div>Camera not available</div><small style="color:var(--muted2)">Allow camera access and reload</small></div>
+    <div id="grace-pill">◌ GRACE PERIOD</div>
+    <div id="notif-area"></div>
+
+    <!-- Global calibration -->
+    <div id="cal-modal" class="modal-bg">
+      <div class="modal-card">
+        <div class="modal-tag">One-Time Setup</div>
+        <div class="modal-title">Depth Calibration</div>
+        <div class="modal-sub">Sets the palm-size scale for your room. Required before per-zone depth targeting works.</div>
+        <div class="step-row">
+          <div class="step-dot" id="dot-1">1</div><div class="step-line" id="line-1"></div>
+          <div class="step-dot" id="dot-2">2</div><div class="step-line" id="line-2"></div>
+          <div class="step-dot" id="dot-3">✓</div>
+        </div>
+        <div id="cal-body"></div>
+      </div>
+    </div>
+
+    <!-- Per-zone depth -->
+    <div id="zdm-modal" class="modal-bg">
+      <div class="modal-card" style="width:360px">
+        <div class="modal-tag">Zone Depth Setup</div>
+        <div class="modal-title">Set Zone Depth</div>
+        <div class="modal-sub">Position your hand at the depth where items will be placed in this zone, then capture. Only hands at this depth will activate the zone.</div>
+        <div class="zdm-zone-tag" id="zdm-zone-tag">Zone</div>
+
+        <div class="depth-viz">
+          <div class="dv-labels"><span>FAR</span><span>Current hand depth</span><span>NEAR</span></div>
+          <div class="dv-track" id="dv-track">
+            <div class="dv-range" id="dv-range" style="left:0%;width:0%"></div>
+            <div class="dv-target" id="dv-target" style="left:50%;display:none"></div>
+            <div class="dv-cursor" id="dv-cursor" style="left:50%"></div>
+          </div>
+          <div class="dv-foot"><span id="dv-far-lbl">—</span><span>palm px</span><span id="dv-near-lbl">—</span></div>
+        </div>
+
+        <div style="font-size:9px;color:var(--muted);letter-spacing:.5px;margin-bottom:6px">DEPTH TOLERANCE (±px accepted)</div>
+        <div class="tol-row">
+          <span class="tol-lbl">Tight ←</span>
+          <input type="range" class="tol-slider" id="zdm-tol" min="5" max="60" step="1" value="20" oninput="zdmTolChange(this.value)">
+          <span class="tol-lbl" style="text-align:right">→ Loose</span>
+          <span class="tol-val" id="zdm-tol-val">±20px</span>
+        </div>
+
+        <div id="zdm-warn" class="mwarn" style="display:none">✋ No hand detected.</div>
+        <div id="zdm-prog" style="display:none"><div class="prog-wrap"><div class="prog-fill" id="zdm-pf" style="width:0%"></div><span class="prog-label" id="zdm-pl">Sampling…</span></div></div>
+        <button class="mbtn sky" id="zdm-btn" onclick="zdmCapture()">📐 Capture Depth at This Zone</button>
+        <button class="mskip" onclick="zdmClose()">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Zone name -->
+    <div id="zone-name-wrap">
+      <input id="zone-name-input" type="text" placeholder="Zone name (e.g. Shelf A)" maxlength="24">
+      <button class="znbtn" id="zone-save-btn" onclick="saveZoneDrawn()">Save</button>
+      <button class="znbtn" id="zone-cancel-btn" onclick="cancelDraw()">✕</button>
+    </div>
+  </div>
+
+  <!-- ── DATA PANEL ── -->
+  <div id="data-panel">
+    <div id="data-scroll">
+
+      <div class="db">
+        <div class="db-hdr">Hand Tracking</div>
+        <div id="depth-display">— NO HAND —</div>
+        <div class="palm-bar-wrap">
+          <div class="pb-labels"><span>FAR</span><span>depth position</span><span>NEAR</span></div>
+          <div class="pb-track"><div class="pb-range" id="pb-range" style="display:none"></div><div class="pb-cur" id="pb-cur"></div></div>
+        </div>
+        <div class="dr"><span class="dk">Palm Size</span><span class="dv" id="d-palm">—</span></div>
+        <div class="dr"><span class="dk">Smoothed</span><span class="dv" id="d-smooth">—</span></div>
+        <div class="dr"><span class="dk">Hand</span><span class="dv m" id="d-hand">No</span></div>
+        <div class="dr"><span class="dk">Grace Remaining</span><span class="dv m" id="d-grace">—</span></div>
+        <div class="dr"><span class="dk">MediaPipe</span><span class="dv m" id="d-mp">Loading…</span></div>
+      </div>
+
+      <div class="db">
+        <div class="db-hdr">Global Calibration</div>
+        <div class="dr"><span class="dk">Near (scan)</span><span class="dv a" id="d-near">—</span></div>
+        <div class="dr"><span class="dk">Far (place)</span><span class="dv g" id="d-far">—</span></div>
+        <div class="dr"><span class="dk">Depth Ratio</span><span class="dv" id="d-ratio">—</span></div>
+      </div>
+
+      <div class="db">
+        <div class="db-hdr">Zone Tracker</div>
+        <div class="dr"><span class="dk">Active Zone</span><span class="dv g" id="d-zone">None</span></div>
+        <div class="dr"><span class="dk">Match Mode</span><span class="dv m" id="d-matchmode">—</span></div>
+        <div class="dr"><span class="dk">Dwell</span><span class="dv" id="d-dwell">0%</span></div>
+        <div class="dwell-bg"><div class="dwell-fg" id="dwell-bar"></div></div>
+      </div>
+
+      <div class="db">
+        <div class="db-hdr">Settings</div>
+        <div class="sr"><div class="sl">Dwell Duration<span id="lbl-dwell">1.5s</span></div><input type="range" class="sslider" min="300" max="4000" step="100" value="1500" oninput="S.dwellMs=+this.value;document.getElementById('lbl-dwell').textContent=(this.value/1000).toFixed(1)+'s'"></div>
+        <div class="sr"><div class="sl">Grace Period<span id="lbl-grace">600ms</span></div><input type="range" class="sslider" min="0" max="1500" step="50" value="600" oninput="S.graceMs=+this.value;document.getElementById('lbl-grace').textContent=this.value+'ms'"></div>
+        <div class="sr"><div class="toggle-row"><label>Depth Gating</label><label class="tog"><input type="checkbox" id="tog-depth" checked onchange="S.depthGating=this.checked"><span class="tog-sl"></span></label></div></div>
+      </div>
+
+      <div class="db">
+        <div class="db-hdr">Zones <span style="float:right;font-size:8px;color:var(--muted);font-weight:400;letter-spacing:0">◉ = depth set</span></div>
+        <div id="zone-list"><div style="padding:10px;font-size:10px;color:var(--muted);text-align:center">No zones. Click "✎ Draw Zone".</div></div>
+      </div>
+
+      <div class="db">
+        <div class="db-hdr">Event Log</div>
+        <div id="event-log"><div style="padding:7px 10px;font-size:9px;color:var(--muted2)">No events yet.</div></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════
+const CAL_KEY   = 'th_cal_v3'
+const ZONES_KEY = 'th_zones_v3'
+// Palm centroid landmarks: wrist + all 4 MCP knuckles
+// These 5 give a rock-solid palm centre regardless of finger pose
+const PALM_LM   = [0, 5, 9, 13, 17]
+const ZONE_COLS = [
+  {f:'rgba(99,102,241,.18)',b:'#6366f1'},
+  {f:'rgba(14,165,233,.18)',b:'#0ea5e9'},
+  {f:'rgba(245,158,11,.18)',b:'#f59e0b'},
+  {f:'rgba(236,72,153,.18)',b:'#ec4899'},
+  {f:'rgba(139,92,246,.18)',b:'#8b5cf6'},
+  {f:'rgba(34,197,94,.18)', b:'#22c55e'},
+]
+let zid = 0
+const mkId = () => 'z'+(++zid)
+
+// ═══════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════
+const S = {
+  // Hand
+  lm:null, liveLm:null, lastSeenMs:0,
+  handVisible:false, gracePeriod:false,
+  palmRaw:0, palmSmooth:0, smoothBuf:[],
+  // Position (smoothed centroid)
+  posX:0.5, posY:0.5, posXBuf:[], posYBuf:[],
+  mpReady:false,
+  // Calibration
+  cal:null,
+  // Zones
+  zones:[], activeZone:null,
+  // Dwell
+  dwellZoneId:null, dwellStart:null, dwellProgress:0, dwellDone:false,
+  // Settings
+  dwellMs:1500, graceMs:600, depthGating:true,
+  // Draw
+  drawMode:false, drawStart:null, drawEnd:null, drawConfirming:false,
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════════════
+const median = a => { if(!a.length)return 0; const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2 }
+const saveJ  = (k,v) => { try{localStorage.setItem(k,JSON.stringify(v))}catch(_){} }
+const loadJ  = k => { try{const r=localStorage.getItem(k);return r?JSON.parse(r):null}catch(_){return null} }
+const smoothBuf = (buf,val,n=10) => { buf.push(val);if(buf.length>n)buf.shift();return buf.reduce((a,b)=>a+b,0)/buf.length }
+
+function logEv(msg,cls='') {
+  const log=document.getElementById('event-log')
+  const ph=log.querySelector('div[style]');if(ph)ph.remove()
+  const t=new Date().toTimeString().slice(0,8)
+  const el=document.createElement('div');el.className='ei'
+  el.innerHTML=`<span class="et">${t}</span><span class="${cls?'e'+cls:''}">${msg}</span>`
+  log.prepend(el);while(log.children.length>40)log.removeChild(log.lastChild)
+}
+
+function notify(msg,cls='') {
+  const el=document.createElement('div');el.className='notif '+cls;el.textContent=msg
+  document.getElementById('notif-area').appendChild(el)
+  setTimeout(()=>el.remove(),3300)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HAND MATH
+// ═══════════════════════════════════════════════════════════════
+function palmSize(lm,W,H) {
+  const dx=(lm[9].x-lm[0].x)*W, dy=(lm[9].y-lm[0].y)*H
+  return Math.sqrt(dx*dx+dy*dy)
+}
+
+// Multi-landmark centroid — 5 palm landmarks averaged
+// Far more stable than wrist alone, unaffected by finger extension/curl
+function palmCentroid(lm) {
+  let sx=0,sy=0
+  PALM_LM.forEach(i=>{sx+=lm[i].x;sy+=lm[i].y})
+  return {x:sx/PALM_LM.length,y:sy/PALM_LM.length}
+}
+
+// Maps palm size to 0 (far) → 1 (near) relative to calibration range
+function palmPos(ps) {
+  if(!S.cal||S.cal.nearPalmSize===S.cal.farPalmSize)return 0.5
+  return Math.max(0,Math.min(1,(ps-S.cal.farPalmSize)/(S.cal.nearPalmSize-S.cal.farPalmSize)))
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MEDIAPIPE
+// ═══════════════════════════════════════════════════════════════
+let mpH=null,mpC=null
+
+function initMP(video) {
+  if(typeof Hands==='undefined'){
+    setEl('d-mp','Not available','dv r');logEv('MediaPipe unavailable','a');return
+  }
+  try{
+    mpH=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`})
+    mpH.setOptions({maxNumHands:1,modelComplexity:0,minDetectionConfidence:0.65,minTrackingConfidence:0.55})
+    mpH.onResults(onHand)
+    mpH.initialize().then(()=>{
+      S.mpReady=true;setEl('d-mp','Ready ✓','dv g');logEv('MediaPipe Hands loaded','g')
+      if(typeof Camera!=='undefined'){
+        mpC=new Camera(video,{onFrame:async()=>{if(mpH&&S.mpReady)await mpH.send({image:video})},width:640,height:480})
+        mpC.start()
+      }
+    }).catch(e=>{setEl('d-mp','Error','dv r');console.warn(e)})
+  }catch(e){console.warn(e)}
+}
+
+function onHand(res) {
+  const v=document.getElementById('video'),W=v.videoWidth||640,H=v.videoHeight||480
+  if(!res.multiHandLandmarks?.length){S.handVisible=false;return}
+  const lm=res.multiHandLandmarks[0]
+  S.liveLm=lm;S.handVisible=true;S.lastSeenMs=performance.now()
+  S.palmRaw=palmSize(lm,W,H)
+  S.palmSmooth=smoothBuf(S.smoothBuf,S.palmRaw,14)
+  const c=palmCentroid(lm)
+  S.posX=smoothBuf(S.posXBuf,c.x,12)
+  S.posY=smoothBuf(S.posYBuf,c.y,12)
+  S.lm=lm
+  window.__th_lm=lm
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GRACE PERIOD
+// Hand disappears briefly (blink, fast movement, lighting) —
+// hold the last known position/depth for graceMs before dropping
+// ═══════════════════════════════════════════════════════════════
+function applyGrace() {
+  const now=performance.now(), elapsed=now-S.lastSeenMs
+  if(!S.handVisible && S.liveLm && elapsed<S.graceMs) {
+    S.lm=S.liveLm;S.gracePeriod=true
+  } else if(!S.handVisible && elapsed>=S.graceMs) {
+    S.lm=null;S.gracePeriod=false
+    if(S.smoothBuf.length>0)S.smoothBuf.shift()
+  } else {
+    S.gracePeriod=false
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ZONE MATCHING
+// Each zone can have its own depthTarget + depthTolerance.
+// If a zone has no depthTarget, it matches on 2D position only.
+// The position uses the smoothed palm centroid (5-point average)
+// rather than the raw wrist landmark.
+// ═══════════════════════════════════════════════════════════════
+function matchZones() {
+  if(!S.lm){S.activeZone=null;return}
+  const px=S.posX,py=S.posY
+  S.activeZone=S.zones.find(z=>{
+    if(!(px>=z.x_min&&px<=z.x_max&&py>=z.y_min&&py<=z.y_max))return false
+    if(!z.depthTarget||!S.depthGating)return true
+    return Math.abs(S.palmSmooth-z.depthTarget)<=z.depthTolerance
+  })||null
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DWELL
+// ═══════════════════════════════════════════════════════════════
+function tickDwell() {
+  const az=S.activeZone
+  if(!az){
+    if(S.dwellZoneId){S.dwellZoneId=null;S.dwellStart=null;S.dwellProgress=0;S.dwellDone=false}
+    return
+  }
+  if(az.id!==S.dwellZoneId){
+    S.dwellZoneId=az.id;S.dwellStart=performance.now();S.dwellProgress=0;S.dwellDone=false;return
+  }
+  S.dwellProgress=Math.min((performance.now()-S.dwellStart)/S.dwellMs,1)
+  if(S.dwellProgress>=1&&!S.dwellDone){
+    S.dwellDone=true
+    const msg=`✓ Confirmed → ${az.name}`
+    notify(msg,'green');logEv(msg,'g')
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CANVAS
+// ═══════════════════════════════════════════════════════════════
+function draw() {
+  const cv=document.getElementById('zone-canvas'),v=document.getElementById('video')
+  const W=v.videoWidth||cv.offsetWidth||640,H=v.videoHeight||cv.offsetHeight||480
+  if(cv.width!==W)cv.width=W;if(cv.height!==H)cv.height=H
+  const ctx=cv.getContext('2d');ctx.clearRect(0,0,W,H)
+
+  S.zones.forEach((z,i)=>{
+    const x=z.x_min*W,y=z.y_min*H,w=(z.x_max-z.x_min)*W,h=(z.y_max-z.y_min)*H
+    const col=ZONE_COLS[i%ZONE_COLS.length],act=S.activeZone?.id===z.id
+
+    ctx.fillStyle=col.f;ctx.fillRect(x,y,w,h)
+    ctx.save()
+    ctx.strokeStyle=act?'#22c55e':col.b;ctx.lineWidth=act?2.5:1.5
+    if(act){ctx.shadowBlur=10;ctx.shadowColor='#22c55e'}
+    ctx.strokeRect(x,y,w,h)
+    ctx.restore()
+
+    // Label
+    ctx.save()
+    ctx.font='600 10px "JetBrains Mono",monospace'
+    const hasD=!!z.depthTarget
+    const lbl=z.name+(hasD?' ◉':' ○')
+    const lw=ctx.measureText(lbl).width+16
+    ctx.fillStyle='rgba(0,0,0,.68)';ctx.fillRect(x,y,lw,20)
+    ctx.fillStyle=hasD?'#0ea5e9':'#d1d5db';ctx.textBaseline='middle';ctx.fillText(lbl,x+8,y+10)
+    ctx.restore()
+
+    // Per-zone depth indicator — left edge bar
+    // Shows where THIS zone's target depth sits relative to calibration range,
+    // and a live dot for current hand depth
+    if(hasD&&S.cal){
+      const barH=h*0.55,barY=y+h*0.22
+      const lo=palmPos(z.depthTarget-z.depthTolerance),hi=palmPos(z.depthTarget+z.depthTolerance)
+      ctx.save()
+      // Track
+      ctx.fillStyle='rgba(255,255,255,.06)';ctx.fillRect(x-6,barY,4,barH)
+      // Accepted range (hi=near=top of bar, lo=far=bottom)
+      const ry=barY+barH*(1-hi),rh=barH*(hi-lo)
+      ctx.fillStyle='rgba(14,165,233,.2)';ctx.fillRect(x-6,ry,4,rh)
+      ctx.strokeStyle='#0ea5e9';ctx.lineWidth=1;ctx.strokeRect(x-6,ry,4,rh)
+      // Live dot
+      if(S.palmSmooth>0){
+        const p=palmPos(S.palmSmooth),dy2=barY+barH*(1-p)
+        const inRange=Math.abs(S.palmSmooth-z.depthTarget)<=z.depthTolerance
+        ctx.fillStyle=inRange?'#22c55e':'#555'
+        if(inRange){ctx.shadowBlur=6;ctx.shadowColor='#22c55e'}
+        ctx.beginPath();ctx.arc(x-4,dy2,4,0,Math.PI*2);ctx.fill()
+      }
+      ctx.restore()
+    }
+
+    // Dwell ring
+    if(act&&S.dwellProgress>0)drawDwellRing(ctx,x,y,w,h,S.dwellProgress)
+  })
+
+  // Draw preview
+  if(S.drawMode&&S.drawStart&&S.drawEnd&&!S.drawConfirming){
+    const x=Math.min(S.drawStart.x,S.drawEnd.x)*W,y=Math.min(S.drawStart.y,S.drawEnd.y)*H
+    const w=Math.abs(S.drawEnd.x-S.drawStart.x)*W,h=Math.abs(S.drawEnd.y-S.drawStart.y)*H
+    ctx.fillStyle='rgba(245,158,11,.08)';ctx.fillRect(x,y,w,h)
+    ctx.setLineDash([5,4]);ctx.strokeStyle='#f59e0b';ctx.lineWidth=1.5;ctx.strokeRect(x,y,w,h);ctx.setLineDash([])
+  }
+
+  drawDepthBadge(ctx,W)
+  drawHandDot(ctx,W,H)
+}
+
+function drawDwellRing(ctx,zx,zy,zw,zh,p){
+  const cx=zx+zw/2,cy=zy+zh/2,r=Math.min(zw,zh)/2+11
+  const col=p>=1?'#34d399':'#22c55e'
+  ctx.save()
+  ctx.strokeStyle='rgba(34,197,94,.1)';ctx.lineWidth=4
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke()
+  ctx.strokeStyle=col;ctx.lineWidth=4;ctx.lineCap='round'
+  ctx.shadowBlur=10;ctx.shadowColor=col
+  ctx.beginPath();ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+p*Math.PI*2);ctx.stroke()
+  ctx.font='600 10px "JetBrains Mono",monospace';ctx.textAlign='center';ctx.textBaseline='bottom'
+  ctx.shadowBlur=5;ctx.fillStyle=col
+  ctx.fillText(p>=1?'✓ Confirmed':`Hold ${Math.round(p*100)}%`,cx,zy+zh+r+3)
+  ctx.restore()
+}
+
+function drawDepthBadge(ctx,W){
+  let txt,col
+  if(!S.lm){txt='○ NO HAND';col='#444'}
+  else if(!S.cal){txt='○ UNCAL';col='#555'}
+  else{
+    const p=palmPos(S.palmSmooth)
+    txt=p>0.65?'▲ NEAR':p<0.35?'▼ FAR':'◆ MID'
+    col=p>0.65?'#f59e0b':p<0.35?'#22c55e':'#0ea5e9'
+  }
+  ctx.save()
+  ctx.font='600 10px "JetBrains Mono",monospace'
+  const tw=ctx.measureText(txt).width,bw=tw+20,bh=22,bx=W-bw-10,by=10
+  rrect(ctx,bx,by,bw,bh,4)
+  ctx.fillStyle='rgba(0,0,0,.65)';ctx.fill()
+  ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.stroke()
+  ctx.fillStyle=col;ctx.textAlign='center';ctx.textBaseline='middle'
+  if(col!=='#555'&&col!=='#444'){ctx.shadowBlur=5;ctx.shadowColor=col}
+  ctx.fillText(txt,bx+bw/2,by+bh/2)
+  ctx.restore()
+}
+
+function drawHandDot(ctx,W,H){
+  if(!S.lm||S.palmSmooth<1)return
+  const cx=S.posX*W,cy=S.posY*H
+  const col=S.gracePeriod?'#f59e0b':'#22c55e'
+  ctx.save()
+  // Outer ring
+  ctx.beginPath();ctx.arc(cx,cy,10,0,Math.PI*2)
+  ctx.strokeStyle=col+'44';ctx.lineWidth=1.5;ctx.stroke()
+  // Centre
+  ctx.beginPath();ctx.arc(cx,cy,5,0,Math.PI*2)
+  ctx.fillStyle=col;ctx.shadowBlur=10;ctx.shadowColor=col;ctx.fill()
+  // Crosshair
+  ctx.strokeStyle=col;ctx.lineWidth=1;ctx.shadowBlur=0
+  ;[[-14,-7],[7,14],[-14,-7],[7,14]].forEach((_,j)=>{
+    const isX=j<2
+    ctx.beginPath()
+    if(isX){ctx.moveTo(cx+(j===0?-14:-7+(j===1?7:0)),cy);ctx.lineTo(cx+(j===0?-7:14),cy)}
+    else{ctx.moveTo(cx,cy+(j===2?-14:-7));ctx.lineTo(cx,cy+(j===2?-7:14))}
+    ctx.stroke()
+  })
+  ctx.restore()
+}
+
+function rrect(ctx,x,y,w,h,r){
+  ctx.beginPath()
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r)
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h)
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r)
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y)
+  ctx.closePath()
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DATA PANEL
+// ═══════════════════════════════════════════════════════════════
+function setEl(id,txt,cls=''){const e=document.getElementById(id);if(!e)return;e.textContent=txt;if(cls)e.className=cls}
+
+function updatePanel(){
+  const dd=document.getElementById('depth-display')
+  if(!S.lm){dd.style.cssText='background:rgba(255,255,255,.02);color:#444';dd.textContent='— NO HAND —'}
+  else if(!S.cal){dd.style.cssText='background:rgba(255,255,255,.02);color:#555';dd.textContent='— UNCALIBRATED —'}
+  else{
+    const p=palmPos(S.palmSmooth)
+    if(p>0.65){dd.style.cssText='background:rgba(245,158,11,.08);color:#f59e0b';dd.textContent='▲ NEAR — Scanning'}
+    else if(p<0.35){dd.style.cssText='background:rgba(34,197,94,.06);color:#22c55e';dd.textContent='▼ FAR — Placement'}
+    else{dd.style.cssText='background:rgba(14,165,233,.06);color:#0ea5e9';dd.textContent='◆ MID RANGE'}
+  }
+
+  // Palm bar
+  const pbCur=document.getElementById('pb-cur'),pbRng=document.getElementById('pb-range')
+  if(S.cal&&S.palmSmooth>0){
+    pbCur.style.left=palmPos(S.palmSmooth)*100+'%';pbCur.style.display='block'
+    if(S.activeZone?.depthTarget){
+      const lo=palmPos(S.activeZone.depthTarget-S.activeZone.depthTolerance)*100
+      const hi=palmPos(S.activeZone.depthTarget+S.activeZone.depthTolerance)*100
+      pbRng.style.cssText=`left:${lo}%;width:${hi-lo}%;display:block`
+    } else pbRng.style.display='none'
+  } else{pbCur.style.display='none';pbRng.style.display='none'}
+
+  setEl('d-palm',S.palmRaw?S.palmRaw.toFixed(1)+'px':'—')
+  setEl('d-smooth',S.palmSmooth?S.palmSmooth.toFixed(1)+'px':'—')
+  setEl('d-hand',S.handVisible?'Yes ●':S.gracePeriod?'Grace ◌':'No —','dv '+(S.handVisible?'g':S.gracePeriod?'a':'m'))
+  if(S.gracePeriod){
+    const rem=Math.max(0,Math.round(S.graceMs-(performance.now()-S.lastSeenMs)))
+    setEl('d-grace',rem+'ms left','dv a')
+  } else setEl('d-grace',S.handVisible?'—':'—','dv m')
+  document.getElementById('grace-pill').classList.toggle('show',S.gracePeriod)
+
+  if(S.cal){
+    setEl('d-near',S.cal.nearPalmSize.toFixed(1)+'px','dv a')
+    setEl('d-far',S.cal.farPalmSize.toFixed(1)+'px','dv g')
+    setEl('d-ratio',S.cal.depthRatio.toFixed(2),'dv')
+  }
+
+  setEl('d-zone',S.activeZone?S.activeZone.name:'None','dv '+(S.activeZone?'g':'m'))
+  if(!S.activeZone)setEl('d-matchmode','—','dv m')
+  else if(!S.activeZone.depthTarget||!S.depthGating)setEl('d-matchmode','2D position only','dv a')
+  else setEl('d-matchmode','Position + Depth ✓','dv g')
+
+  const pct=Math.round(S.dwellProgress*100)
+  setEl('d-dwell',pct+'%')
+  document.getElementById('dwell-bar').style.width=pct+'%'
+
+  renderZoneList()
+}
+
+// Tracks last rendered signature so we only rebuild the zone list DOM
+// when something actually changes — not every animation frame.
+// Rebuilding every frame destroys button elements before clicks can fire.
+let _zoneListSig = ''
+
+function renderZoneList(){
+  // Build a compact string representing everything visible in the list
+  const sig = S.zones.map(z =>
+    `${z.id}:${z.name}:${!!z.depthTarget}:${z.depthTolerance}:${S.activeZone?.id===z.id}:${zdmActive===z.id&&zdmRunning}`
+  ).join('|') + '|len:' + S.zones.length
+
+  if (sig === _zoneListSig) return   // nothing changed — leave DOM alone
+  _zoneListSig = sig
+
+  const el=document.getElementById('zone-list')
+  if(!S.zones.length){el.innerHTML='<div style="padding:10px;font-size:10px;color:var(--muted);text-align:center">No zones. Click "✎ Draw Zone".</div>';return}
+  el.innerHTML=S.zones.map((z,i)=>{
+    const col=ZONE_COLS[i%ZONE_COLS.length].b,act=S.activeZone?.id===z.id,hasD=!!z.depthTarget
+    const isSampling=zdmActive===z.id&&zdmRunning
+    return`<div class="zi ${act?'active':''}">
+      <div class="zi-top">
+        <div class="zi-dot" style="background:${col}"></div>
+        <div class="zi-name">${z.name}</div>
+        ${act?'<span class="badge badge-active">active</span>':''}
+        <span class="badge ${hasD?'badge-depth':'badge-nodepth'}">${hasD?'◉ depth':'○ 2D'}</span>
+      </div>
+      <div class="zi-actions">
+        <button class="za depth ${isSampling?'sampling':''}" onclick="openZdm('${z.id}')">${hasD?'Re-set':'📐 Set'} Depth</button>
+        ${hasD?`<button class="za" onclick="clearZoneDepth('${z.id}')">✕ Depth</button>`:''}
+        <button class="za del" onclick="deleteZone('${z.id}')">Delete</button>
+      </div>
+    </div>`
+  }).join('')
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN LOOP
+// ═══════════════════════════════════════════════════════════════
+function loop(){applyGrace();matchZones();tickDwell();draw();updatePanel();zdmLiveTick();requestAnimationFrame(loop)}
+
+// ═══════════════════════════════════════════════════════════════
+// ZONE DRAWING
+// ═══════════════════════════════════════════════════════════════
+function toggleDraw(){
+  S.drawMode=!S.drawMode;S.drawStart=null;S.drawEnd=null
+  const p=document.getElementById('camera-panel'),btn=document.getElementById('btn-draw')
+  if(S.drawMode){p.classList.add('draw-mode');btn.classList.add('active');btn.textContent='✕ Cancel Draw';notify('Drag to draw a zone','amber')}
+  else{p.classList.remove('draw-mode');btn.classList.remove('active');btn.textContent='✎ Draw Zone';document.getElementById('zone-name-wrap').classList.remove('show')}
+}
+
+function vc(e){const v=document.getElementById('video'),r=v.getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))}}
+const dov=document.getElementById('draw-overlay')
+dov.addEventListener('mousedown',e=>{if(!S.drawMode||S.drawConfirming)return;S.drawStart=vc(e);S.drawEnd=null})
+dov.addEventListener('mousemove',e=>{if(!S.drawStart)return;S.drawEnd=vc(e)})
+dov.addEventListener('mouseup',e=>{
+  if(!S.drawStart)return;S.drawEnd=vc(e)
+  const v=document.getElementById('video'),minW=30/(v.offsetWidth||640),minH=30/(v.offsetHeight||480)
+  if(Math.abs(S.drawEnd.x-S.drawStart.x)<minW||Math.abs(S.drawEnd.y-S.drawStart.y)<minH){S.drawStart=null;S.drawEnd=null;return}
+  S.drawConfirming=true
+  document.getElementById('zone-name-wrap').classList.add('show')
+  const inp=document.getElementById('zone-name-input');inp.value=`Zone ${S.zones.length+1}`;inp.focus();inp.select()
+})
+document.getElementById('zone-name-input').addEventListener('keydown',e=>{if(e.key==='Enter')saveZoneDrawn();if(e.key==='Escape')cancelDraw()})
+
+function saveZoneDrawn(){
+  const name=document.getElementById('zone-name-input').value.trim()||`Zone ${S.zones.length+1}`
+  const s=S.drawStart,en=S.drawEnd;if(!s||!en)return
+  S.zones.push({id:mkId(),name,x_min:Math.min(s.x,en.x),y_min:Math.min(s.y,en.y),x_max:Math.max(s.x,en.x),y_max:Math.max(s.y,en.y),depthTarget:null,depthTolerance:20})
+  logEv(`Zone added: "${name}"`);saveJ(ZONES_KEY,S.zones)
+  cancelDraw()
+}
+
+function cancelDraw(){
+  S.drawStart=null;S.drawEnd=null;S.drawConfirming=false
+  document.getElementById('zone-name-wrap').classList.remove('show')
+  S.drawMode=false
+  document.getElementById('camera-panel').classList.remove('draw-mode')
+  const btn=document.getElementById('btn-draw');btn.classList.remove('active');btn.textContent='✎ Draw Zone'
+}
+
+function deleteZone(id){
+  S.zones=S.zones.filter(z=>z.id!==id)
+  if(S.activeZone?.id===id)S.activeZone=null
+  if(S.dwellZoneId===id){S.dwellZoneId=null;S.dwellStart=null;S.dwellProgress=0}
+  logEv('Zone deleted');saveJ(ZONES_KEY,S.zones)
+}
+
+function clearZoneDepth(id){
+  const z=S.zones.find(z=>z.id===id);if(!z)return
+  z.depthTarget=null;z.depthTolerance=20
+  logEv(`Depth cleared: "${z.name}"`,'a');saveJ(ZONES_KEY,S.zones)
+}
+
+function clearZones(){
+  if(!S.zones.length)return
+  S.zones=[];S.activeZone=null;S.dwellZoneId=null;S.dwellStart=null;S.dwellProgress=0
+  logEv('All zones cleared','a');saveJ(ZONES_KEY,S.zones)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PER-ZONE DEPTH MODAL
+// ═══════════════════════════════════════════════════════════════
+let zdmZoneId=null,zdmRunning=false,zdmActive=null,zdmTol=20,zdmInterval=null
+
+function openZdm(zoneId){
+  zdmZoneId=zoneId;zdmRunning=false;zdmActive=null;zdmTol=20
+  const z=S.zones.find(z=>z.id===zoneId);if(!z)return
+  document.getElementById('zdm-zone-tag').textContent=z.name
+  if(z.depthTolerance)zdmTol=z.depthTolerance
+  const tslider=document.getElementById('zdm-tol');tslider.value=zdmTol
+  document.getElementById('zdm-tol-val').textContent='±'+zdmTol+'px'
+  document.getElementById('zdm-warn').style.display='none'
+  document.getElementById('zdm-prog').style.display='none'
+  const btn=document.getElementById('zdm-btn');btn.style.display='block';btn.textContent='📐 Capture Depth at This Zone'
+  // Update cal labels
+  if(S.cal){document.getElementById('dv-far-lbl').textContent=S.cal.farPalmSize.toFixed(0);document.getElementById('dv-near-lbl').textContent=S.cal.nearPalmSize.toFixed(0)}
+  // Show existing target
+  const tgt=document.getElementById('dv-target')
+  if(z.depthTarget&&S.cal){tgt.style.left=palmPos(z.depthTarget)*100+'%';tgt.style.display='block';zdmDrawRange(z.depthTarget,zdmTol)}
+  else{tgt.style.display='none';document.getElementById('dv-range').style.cssText='left:0%;width:0%'}
+  document.getElementById('zdm-modal').classList.add('show')
+}
+
+function zdmTolChange(v){
+  zdmTol=+v;document.getElementById('zdm-tol-val').textContent='±'+v+'px'
+  const z=S.zones.find(z=>z.id===zdmZoneId);if(z?.depthTarget)zdmDrawRange(z.depthTarget,zdmTol)
+}
+
+function zdmDrawRange(target,tol){
+  if(!S.cal)return
+  const lo=Math.max(0,palmPos(target-tol))*100,hi=Math.min(100,palmPos(target+tol))*100
+  document.getElementById('dv-range').style.cssText=`left:${lo}%;width:${hi-lo}%`
+}
+
+function zdmLiveTick(){
+  if(!document.getElementById('zdm-modal').classList.contains('show'))return
+  if(!S.cal)return
+  const pos=palmPos(S.palmSmooth)*100
+  document.getElementById('dv-cursor').style.left=pos+'%'
+  const z=S.zones.find(z=>z.id===zdmZoneId);if(z?.depthTarget)zdmDrawRange(z.depthTarget,zdmTol)
+}
+
+function zdmCapture(){
+  if(!S.handVisible&&!S.gracePeriod){document.getElementById('zdm-warn').style.display='block';return}
+  zdmRunning=true;zdmActive=zdmZoneId
+  const samples=[],start=Date.now(),dur=1200
+  document.getElementById('zdm-warn').style.display='none'
+  document.getElementById('zdm-btn').style.display='none'
+  document.getElementById('zdm-prog').style.display='block'
+  const pf=document.getElementById('zdm-pf'),pl=document.getElementById('zdm-pl')
+  zdmInterval=setInterval(()=>{
+    const el=Date.now()-start,pct=Math.min((el/dur)*100,100)
+    pf.style.width=pct+'%';pl.textContent=`Sampling… ${Math.round(pct)}%`
+    if(S.palmRaw>5)samples.push(S.palmRaw)
+    if(el>=dur){
+      clearInterval(zdmInterval);zdmRunning=false;zdmActive=null
+      document.getElementById('zdm-prog').style.display='none'
+      if(samples.length<3){document.getElementById('zdm-warn').style.display='block';document.getElementById('zdm-btn').style.display='block';return}
+      const target=median(samples)
+      const z=S.zones.find(z=>z.id===zdmZoneId);if(!z)return
+      z.depthTarget=target;z.depthTolerance=zdmTol
+      const tgt=document.getElementById('dv-target')
+      if(S.cal){tgt.style.left=palmPos(target)*100+'%';tgt.style.display='block';zdmDrawRange(target,zdmTol)}
+      logEv(`Depth set: "${z.name}" → ${target.toFixed(0)}px ±${zdmTol}px`,'g')
+      notify(`Depth set for "${z.name}" ✓`,'green')
+      saveJ(ZONES_KEY,S.zones)
+      const btn=document.getElementById('zdm-btn');btn.style.display='block';btn.textContent='↺ Recapture'
+    }
+  },80)
+}
+
+function zdmClose(){clearInterval(zdmInterval);zdmRunning=false;zdmActive=null;document.getElementById('zdm-modal').classList.remove('show')}
+
+// ═══════════════════════════════════════════════════════════════
+// GLOBAL CALIBRATION
+// ═══════════════════════════════════════════════════════════════
+let calPhase='idle',calNear=null,calFarV=null,calInt=null
+
+function startCal(){calPhase='near';calNear=null;calFarV=null;renderCal();document.getElementById('cal-modal').classList.add('show')}
+
+function renderCal(){
+  const body=document.getElementById('cal-body')
+  const d=(id,cls)=>{const e=document.getElementById(id);if(e)e.className='step-dot'+cls}
+  const l=(id,cls)=>{const e=document.getElementById(id);if(e)e.className='step-line'+cls}
+  d('dot-1',calPhase==='near'?' active':calNear?' done':'')
+  d('dot-2',calPhase==='far'?' active':calFarV?' done':'')
+  d('dot-3',calPhase==='done'?' done':'')
+  l('line-1',calNear?' done':'')
+  l('line-2',calFarV?' done':'')
+
+  if(calPhase==='near'){ body.innerHTML=`
+    <div class="instr-box"><div class="instr-icon">🤚</div><div class="instr-title">Step 1 — Scanning Distance</div><div class="instr-body">Hold your hand <strong style="color:#fff">close to the camera</strong> as if scanning an item. Keep steady then capture.</div></div>
+    <div id="cal-w" class="mwarn" style="display:none">✋ No hand detected.</div>
+    <div id="cal-p" style="display:none"><div class="prog-wrap"><div class="prog-fill" id="cal-pf" style="width:0%"></div><span class="prog-label" id="cal-pl">Sampling…</span></div></div>
+    <button class="mbtn amber" onclick="calCapture()">📸 Capture Close Position</button>
+    <button class="mskip" onclick="calSkip()">Skip (2D mode only)</button>`
+  }else if(calPhase==='far'){ body.innerHTML=`
+    <div class="instr-box"><div class="instr-icon">🙌</div><div class="instr-title">Step 2 — Furthest Placement Distance</div><div class="instr-body">Reach your hand to your <strong style="color:#fff">furthest shelf / zone</strong>. Keep steady then capture.</div></div>
+    <div id="cal-w" class="mwarn" style="display:none">✋ No hand detected.</div>
+    <div id="cal-p" style="display:none"><div class="prog-wrap"><div class="prog-fill" id="cal-pf" style="width:0%"></div><span class="prog-label" id="cal-pl">Sampling…</span></div></div>
+    <button class="mbtn amber" onclick="calCapture()">📸 Capture Far Position</button>`
+  }else if(calPhase==='error'){ body.innerHTML=`<div class="merror" id="cal-err"></div><button class="mbtn amber" onclick="startCal()">↺ Try Again</button><button class="mskip" onclick="calSkip()">Skip</button>`
+  }else if(calPhase==='done'){ body.innerHTML=`<div class="msuccess"><span class="sico">✅</span><p>Depth calibrated!</p><small id="cal-sum"></small></div><button class="mbtn green" onclick="calClose()">Continue →</button>` }
+}
+
+function calCapture(){
+  if(!S.handVisible&&!S.gracePeriod){document.getElementById('cal-w').style.display='block';return}
+  document.getElementById('cal-w').style.display='none'
+  document.getElementById('cal-p').style.display='block'
+  const btn=document.querySelector('#cal-body .mbtn');if(btn)btn.style.display='none'
+  const pf=document.getElementById('cal-pf'),pl=document.getElementById('cal-pl')
+  const smp=[],start=Date.now(),dur=1200
+  calInt=setInterval(()=>{
+    const el=Date.now()-start,pct=Math.min((el/dur)*100,100)
+    pf.style.width=pct+'%';pl.textContent=`Sampling… ${Math.round(pct)}%`
+    if(S.palmRaw>5)smp.push(S.palmRaw)
+    if(el>=dur){
+      clearInterval(calInt)
+      if(smp.length<3){document.getElementById('cal-w').style.display='block';if(btn)btn.style.display='block';document.getElementById('cal-p').style.display='none';return}
+      const r=median(smp)
+      if(calPhase==='near'){calNear=r;calPhase='far';renderCal()}
+      else{calFarV=r;calValidate()}
+    }
+  },80)
+}
+
+function calValidate(){
+  const near=calNear,far=calFarV,threshold=(near+far)/2,ratio=far/near
+  if(ratio>0.92){calPhase='error';renderCal();document.getElementById('cal-err').textContent=`Positions too similar (ratio ${ratio.toFixed(2)}). Hold much closer for Step 1 and reach much further for Step 2.`;return}
+  const cal={nearPalmSize:near,farPalmSize:far,threshold,depthRatio:ratio,calibratedAt:Date.now()}
+  saveJ(CAL_KEY,cal);S.cal=cal;S.smoothBuf=[]
+  calPhase='done';renderCal()
+  document.getElementById('cal-sum').textContent=`Near: ${near.toFixed(0)}px · Far: ${far.toFixed(0)}px`
+  logEv(`Calibrated — range ${far.toFixed(0)}→${near.toFixed(0)}px`,'g')
+}
+
+function calSkip(){calClose();notify('Depth calibration skipped — 2D mode only','amber')}
+function calClose(){document.getElementById('cal-modal').classList.remove('show')}
+
+// ═══════════════════════════════════════════════════════════════
+// CAMERA
+// ═══════════════════════════════════════════════════════════════
+async function initCam(){
+  const v=document.getElementById('video'),off=document.getElementById('cam-offline')
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720}}})
+    v.srcObject=stream;await new Promise(r=>v.onloadedmetadata=r);v.play()
+    off.classList.remove('show')
+    document.getElementById('topbar-status').textContent='CAMERA ACTIVE · DEPTH-AWARE ZONE TRACKER v3'
+    logEv('Camera initialized','g');initMP(v)
+  }catch(e){
+    off.classList.add('show');v.style.display='none'
+    document.getElementById('topbar-status').textContent='CAMERA UNAVAILABLE'
+    logEv('Camera error: '+e.message,'a')
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded',()=>{
+  S.cal=loadJ(CAL_KEY)
+  if(S.cal)logEv('Loaded saved calibration','g')
+  const saved=loadJ(ZONES_KEY)
+  if(saved?.length){S.zones=saved;logEv('Loaded '+saved.length+' zones')}
+  else{
+    S.zones=[
+      {id:mkId(),name:'Shelf A',x_min:.04,y_min:.04,x_max:.46,y_max:.48,depthTarget:null,depthTolerance:20},
+      {id:mkId(),name:'Shelf B',x_min:.54,y_min:.04,x_max:.96,y_max:.48,depthTarget:null,depthTolerance:20},
+      {id:mkId(),name:'Bin 1', x_min:.28,y_min:.58,x_max:.72,y_max:.96,depthTarget:null,depthTolerance:20},
+    ]
+  }
+  initCam();requestAnimationFrame(loop)
+  if(!S.cal)setTimeout(()=>notify('💡 Start with "⊕ Calibrate Depth" to enable per-zone depth','amber'),2200)
+  else setTimeout(()=>notify('📐 Click "Set Depth" on each zone to assign its depth','amber'),1200)
+})
+</script>
+</body>
+</html>

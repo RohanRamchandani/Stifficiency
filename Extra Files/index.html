@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TrackHive · Depth-Aware Zone Tracker</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+
+  <!--
+    MediaPipe Hands — must load BEFORE app.js.
+    HandTracker checks for window.Hands and window.Camera at init time.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ── TOP BAR ────────────────────────────────────────────────────── -->
+<div id="topbar">
+  <div id="logo">TRACK<span>HIVE</span></div>
+  <div id="topbar-status">DEPTH-AWARE ZONE TRACKER</div>
+  <button class="topbtn" onclick="openCalibration()">⊕ Calibrate Depth</button>
+  <button class="topbtn" id="btn-draw" onclick="toggleDrawMode()">✎ Draw Zone</button>
+  <button class="topbtn danger" onclick="clearAllZones()">✕ Clear Zones</button>
+</div>
+
+<!-- ── MAIN ───────────────────────────────────────────────────────── -->
+<div id="main">
+
+  <!-- ── CAMERA PANEL ── -->
+  <div id="camera-panel">
+    <!-- Corner brackets (purely decorative) -->
+    <div class="corner corner-tl"></div>
+    <div class="corner corner-tr"></div>
+    <div class="corner corner-bl"></div>
+    <div class="corner corner-br"></div>
+
+    <!-- Live camera feed -->
+    <video id="video" autoplay muted playsinline></video>
+
+    <!-- Zone overlay canvas (drawn every frame by renderer.js) -->
+    <canvas id="zone-canvas"></canvas>
+
+    <!-- Transparent overlay for click-drag zone drawing (shown in draw mode) -->
+    <div id="draw-overlay"></div>
+
+    <!-- Camera offline placeholder -->
+    <div id="cam-offline">
+      <div class="icon">📷</div>
+      <div>Camera not available</div>
+      <small style="color:var(--muted2)">Allow camera access and reload</small>
+    </div>
+
+    <!-- Grace period indicator -->
+    <div id="grace-pill">◌ GRACE PERIOD</div>
+
+    <!-- Toast notifications -->
+    <div id="notif-area"></div>
+
+    <!-- ── GLOBAL CALIBRATION MODAL ── -->
+    <div id="cal-modal" class="modal-bg">
+      <div class="modal-card">
+        <div class="modal-tag">One-Time Setup</div>
+        <div class="modal-title">Depth Calibration</div>
+        <div class="modal-sub">
+          Sets the palm-size scale for your room.
+          Required before per-zone depth targeting works.
+        </div>
+        <!-- Step indicators -->
+        <div class="step-row">
+          <div class="step-dot" id="dot-1">1</div>
+          <div class="step-line" id="line-1"></div>
+          <div class="step-dot" id="dot-2">2</div>
+          <div class="step-line" id="line-2"></div>
+          <div class="step-dot" id="dot-3">✓</div>
+        </div>
+        <!-- Content rebuilt by CalibrationUI per step -->
+        <div id="cal-body"></div>
+      </div>
+    </div>
+
+    <!-- ── PER-ZONE DEPTH MODAL ── -->
+    <div id="zdm-modal" class="modal-bg">
+      <div class="modal-card" style="width:360px">
+        <div class="modal-tag">Zone Depth Setup</div>
+        <div class="modal-title">Set Zone Depth</div>
+        <div class="modal-sub">
+          Position your hand at the depth where items will be placed in this zone,
+          then capture. Only hands at this depth will activate the zone.
+        </div>
+        <div class="zdm-zone-tag" id="zdm-zone-tag">Zone</div>
+
+        <!-- Live depth visualiser -->
+        <div class="depth-viz">
+          <div class="dv-labels">
+            <span>FAR</span>
+            <span>Current hand depth</span>
+            <span>NEAR</span>
+          </div>
+          <div class="dv-track" id="dv-track">
+            <!-- Accepted range band (sky blue) -->
+            <div class="dv-range"  id="dv-range"  style="left:0%;width:0%"></div>
+            <!-- Target marker (vertical sky line) — shown after capture -->
+            <div class="dv-target" id="dv-target" style="left:50%;display:none"></div>
+            <!-- Live hand depth cursor (amber dot) -->
+            <div class="dv-cursor" id="dv-cursor" style="left:50%"></div>
+          </div>
+          <div class="dv-foot">
+            <span id="dv-far-lbl">—</span>
+            <span>palm px</span>
+            <span id="dv-near-lbl">—</span>
+          </div>
+        </div>
+
+        <!-- Tolerance slider -->
+        <div style="font-size:9px;color:var(--muted);letter-spacing:.5px;margin-bottom:6px">
+          DEPTH TOLERANCE (±px accepted)
+        </div>
+        <div class="tol-row">
+          <span class="tol-lbl">Tight ←</span>
+          <input type="range" class="tol-slider" id="zdm-tol"
+                 min="5" max="60" step="1" value="20"
+                 oninput="zdmTolChange(this.value)">
+          <span class="tol-lbl" style="text-align:right">→ Loose</span>
+          <span class="tol-val" id="zdm-tol-val">±20px</span>
+        </div>
+
+        <div id="zdm-warn" class="mwarn" style="display:none">✋ No hand detected.</div>
+        <div id="zdm-prog" style="display:none">
+          <div class="prog-wrap">
+            <div class="prog-fill" id="zdm-pf" style="width:0%"></div>
+            <span class="prog-label" id="zdm-pl">Sampling…</span>
+          </div>
+        </div>
+        <button class="mbtn sky" id="zdm-btn" onclick="zdmCapture()">
+          📐 Capture Depth at This Zone
+        </button>
+        <button class="mskip" onclick="zdmClose()">Cancel</button>
+      </div>
+    </div>
+
+    <!-- ── ZONE NAME INPUT (appears after drag-draw) ── -->
+    <div id="zone-name-wrap">
+      <input id="zone-name-input" type="text" placeholder="Zone name (e.g. Shelf A)" maxlength="24">
+      <button class="znbtn" id="zone-save-btn"   onclick="window.__drawUI?.save()">Save</button>
+      <button class="znbtn" id="zone-cancel-btn" onclick="window.__drawUI?.cancel()">✕</button>
+    </div>
+  </div><!-- /camera-panel -->
+
+  <!-- ── DATA PANEL ── -->
+  <div id="data-panel">
+    <div id="data-scroll">
+
+      <!-- Hand Tracking -->
+      <div class="db">
+        <div class="db-hdr">Hand Tracking</div>
+        <div id="depth-display">— NO HAND —</div>
+        <div class="palm-bar-wrap">
+          <div class="pb-labels"><span>FAR</span><span>depth position</span><span>NEAR</span></div>
+          <div class="pb-track">
+            <div class="pb-range" id="pb-range" style="display:none"></div>
+            <div class="pb-cur"   id="pb-cur"></div>
+          </div>
+        </div>
+        <div class="dr"><span class="dk">Palm Size</span><span class="dv" id="d-palm">—</span></div>
+        <div class="dr"><span class="dk">Smoothed</span><span class="dv" id="d-smooth">—</span></div>
+        <div class="dr"><span class="dk">Hand</span><span class="dv m" id="d-hand">No</span></div>
+        <div class="dr"><span class="dk">Grace Remaining</span><span class="dv m" id="d-grace">—</span></div>
+        <div class="dr"><span class="dk">MediaPipe</span><span class="dv m" id="d-mp">Loading…</span></div>
+      </div>
+
+      <!-- Calibration -->
+      <div class="db">
+        <div class="db-hdr">Global Calibration</div>
+        <div class="dr"><span class="dk">Near (scan)</span><span class="dv a" id="d-near">—</span></div>
+        <div class="dr"><span class="dk">Far (place)</span><span class="dv g" id="d-far">—</span></div>
+        <div class="dr"><span class="dk">Depth Ratio</span><span class="dv"  id="d-ratio">—</span></div>
+      </div>
+
+      <!-- Zone Tracker -->
+      <div class="db">
+        <div class="db-hdr">Zone Tracker</div>
+        <div class="dr"><span class="dk">Active Zone</span><span class="dv g" id="d-zone">None</span></div>
+        <div class="dr"><span class="dk">Match Mode</span><span class="dv m" id="d-matchmode">—</span></div>
+        <div class="dr"><span class="dk">Dwell</span><span class="dv" id="d-dwell">0%</span></div>
+        <div class="dwell-bg"><div class="dwell-fg" id="dwell-bar"></div></div>
+      </div>
+
+      <!-- Settings -->
+      <div class="db">
+        <div class="db-hdr">Settings</div>
+        <div class="sr">
+          <div class="sl">Dwell Duration <span id="lbl-dwell">1.5s</span></div>
+          <input type="range" class="sslider" min="300" max="4000" step="100" value="1500"
+                 oninput="onDwellChange(this.value)">
+        </div>
+        <div class="sr">
+          <div class="sl">Grace Period <span id="lbl-grace">600ms</span></div>
+          <input type="range" class="sslider" min="0" max="1500" step="50" value="600"
+                 oninput="onGraceChange(this.value)">
+        </div>
+        <div class="sr">
+          <div class="toggle-row">
+            <label>Depth Gating</label>
+            <label class="tog">
+              <input type="checkbox" checked onchange="onDepthGateChange(this.checked)">
+              <span class="tog-sl"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Zone List -->
+      <div class="db">
+        <div class="db-hdr">
+          Zones
+          <span style="float:right;font-size:8px;color:var(--muted);font-weight:400;letter-spacing:0">◉ = depth set</span>
+        </div>
+        <div id="zone-list">
+          <div style="padding:10px;font-size:10px;color:var(--muted);text-align:center">
+            No zones. Click "✎ Draw Zone".
+          </div>
+        </div>
+      </div>
+
+      <!-- Event Log -->
+      <div class="db">
+        <div class="db-hdr">Event Log</div>
+        <div id="event-log">
+          <div style="padding:7px 10px;font-size:9px;color:var(--muted2)">No events yet.</div>
+        </div>
+      </div>
+
+    </div><!-- /data-scroll -->
+  </div><!-- /data-panel -->
+
+</div><!-- /main -->
+
+<!--
+  app.js is loaded as an ES module.
+  All other JS files are imported by app.js — no separate script tags needed.
+-->
+<script type="module" src="js/app.js"></script>
+
+</body>
+</html>
