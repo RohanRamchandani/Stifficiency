@@ -543,10 +543,9 @@ export default function CameraPanel() {
 
     return (
         <div className="camera-root" onClick={handleRootClick}>
-            {/* Hidden canvases */}
+            {/* Hidden canvases — video is rendered directly in viewport below */}
             <canvas ref={samplerRef} width={SAMPLE_W} height={SAMPLE_H} style={{ display: 'none' }} />
             <canvas ref={captureRef} style={{ display: 'none' }} />
-            <video  ref={videoRef}  autoPlay muted playsInline style={{ display: 'none' }} />
 
             {/* Viewport */}
             <div className={`camera-viewport ${isActive ? 'vp-active' : 'vp-idle'}`}>
@@ -572,7 +571,14 @@ export default function CameraPanel() {
                     </div>
                 )}
 
-                {isActive && camReady && <ActiveVideo srcVideo={videoRef} />}
+                {/* Single video element — always in DOM so stream persists across tab switches */}
+                <video
+                    ref={videoRef}
+                    id="camera-video"
+                    className="camera-video"
+                    autoPlay muted playsInline
+                    style={{ display: isActive && camReady ? 'block' : 'none' }}
+                />
 
                 <canvas
                     ref={pixelRef} className="pixelated-canvas"
@@ -762,13 +768,4 @@ export default function CameraPanel() {
             <CalibrationModal open={showCalModal} onClose={() => setShowCalModal(false)} />
         </div>
     )
-}
-
-function ActiveVideo({ srcVideo }) {
-    const ref = useRef(null)
-    useEffect(() => {
-        const src = srcVideo.current
-        if (ref.current && src?.srcObject) { ref.current.srcObject = src.srcObject; ref.current.play().catch(() => {}) }
-    }, [srcVideo])
-    return <video ref={ref} id="camera-video" className="camera-video" autoPlay muted playsInline />
 }
