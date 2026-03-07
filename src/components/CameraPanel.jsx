@@ -1,19 +1,29 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { useItems } from '../context/ItemsContext'
+import { useZones } from '../context/ZonesContext'
 import './CameraPanel.css'
 
 // ── Motion detection constants ─────────────────────────────────
 const IDLE_INTERVAL_MS = 1000
 const ACTIVE_INTERVAL_MS = 120
 const MOTION_THRESHOLD = 20
-const IDLE_TIMEOUT_MS = 10 * 1000
+const IDLE_TIMEOUT_MS = 3 * 60 * 1000
 const SAMPLE_W = 64, SAMPLE_H = 48
 const PIXEL_W = 96, PIXEL_H = 72
+
+// ── Tracking config ────────────────────────────────────────────
+const ZONE_HIT_CONFIRM = 2   // consecutive frames hand/object must stay in zone
+const TRACKING_TIMEOUT_MS = 30_000
+
+// ── ElevenLabs config ─────────────────────────────────────────
+const ELEVENLABS_API_KEY = 'sk_60a1e27c2284579def10d8f95dae5697a50219a318b1fd34'
+const ELEVENLABS_VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb'
+const ELEVENLABS_URL = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`
 
 // ── Gemini config ──────────────────────────────────────────────
 const GEMINI_MODEL = 'gemini-2.5-flash'
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
-const SCAN_PROMPT = `Analyze this image and identify the item being held or shown. 
+const SCAN_PROMPT = `Analyze this image. A person is holding an item in their hand(s). Identify ONLY the object being held — ignore the person, their hands, the background, furniture, shelves, and anything not being held.
 Return ONLY a valid JSON object with exactly these fields:
 {
   "name": "specific item name",
@@ -27,17 +37,98 @@ Return ONLY a valid JSON object with exactly these fields:
     "material": "..."
   }
 }
-Include only visually distinguishable features you can actually see. Remove keys you cannot determine. Return ONLY the JSON, no markdown, no explanation.`
+Focus solely on the hand-held object. Include only features you can visually confirm. Remove keys you cannot determine. Return ONLY the JSON, no markdown, no explanation.`
 
-function frameDiff(a, b) {
-    let sum = 0
+// ── Audio context (shared, unlocked on first user gesture) ────
+let sharedAudioCtx = null
+function getAudioCtx() {
+    if (!sharedAudioCtx) {
+        sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    }
+    return sharedAudioCtx
+}
+export async function unlockAudio() {
+    const ctx = getAudioCtx()
+    if (ctx.state === 'suspended') await ctx.resume()
+}
+
+// Prevents mic from picking up TTS output
+let isSpeaking = false
+
+// ── Browser speech synthesis fallback ────────────────────────
+function speakBrowser(text) {
+    if (!window.speechSynthesis) return
+    window.speechSynthesis.cancel()
+    const u = new SpeechSynthesisUtterance(text)
+    u.rate = 1.0
+    u.pitch = 1.1
+    u.volume = 1.0
+
+    // Prefer an English female voice to approximate Rachel
+    const voices = window.speechSynthesis.getVoices()
+    const female = voices.find(v =>
+        v.lang.startsWith('en') && /zira|samantha|karen|female|woman/i.test(v.name)
+    ) || voices.find(v => v.lang.startsWith('en'))
+    if (female) u.voice = female
+
+    isSpeaking = true
+    u.onend = () => { setTimeout(() => { isSpeaking = false }, 600) }
+    u.onerror = () => { isSpeaking = false }
+    window.speechSynthesis.speak(u)
+}
+
+// ── ElevenLabs TTS → browser fallback ─────────────────────────
+async function speakText(text) {
+    if (!ELEVENLABS_API_KEY) { speakBrowser(text); return }
+    isSpeaking = true
+    console.log('TTS Speaking:', text)
+    try {
+        await unlockAudio()
+        const response = await fetch(ELEVENLABS_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'xi-api-key': ELEVENLABS_API_KEY,
+            },
+            body: JSON.stringify({
+                text,
+                model_id: 'eleven_multilingual_v2',
+                voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+            }),
+        })
+        if (!response.ok) throw new Error(`ElevenLabs API error: ${response.statusText}`)
+
+        const blob = await response.blob()
+        const url = URL.createObjectURL(blob)
+        const audio = new Audio(url)
+        audio.onended = () => { URL.revokeObjectURL(url); setTimeout(() => { isSpeaking = false }, 600) }
+        audio.onerror = () => { URL.revokeObjectURL(url); isSpeaking = false }
+        await audio.play()
+    } catch (err) {
+        console.error('TTS error:', err)
+        speakBrowser(text)  // speakBrowser sets isSpeaking = false via onend
+    }
+}
+
+// Returns { score, centroid: {x,y} normalised 0-1, or null if no significant motion pixels }
+function frameDiffWithCentroid(a, b) {
+    let sum = 0, cx = 0, cy = 0, count = 0
     const len = a.data.length
     for (let i = 0; i < len; i += 4) {
-        sum += Math.abs(a.data[i] - b.data[i])
-        sum += Math.abs(a.data[i + 1] - b.data[i + 1])
-        sum += Math.abs(a.data[i + 2] - b.data[i + 2])
+        const d = (Math.abs(a.data[i] - b.data[i]) +
+            Math.abs(a.data[i + 1] - b.data[i + 1]) +
+            Math.abs(a.data[i + 2] - b.data[i + 2])) / 3
+        sum += d
+        if (d > 15) {
+            const px = (i / 4) % SAMPLE_W
+            const py = Math.floor((i / 4) / SAMPLE_W)
+            cx += px; cy += py; count++
+        }
     }
-    return sum / (len / 4)
+    return {
+        score: sum / (len / 4),
+        centroid: count > 8 ? { x: cx / count / SAMPLE_W, y: cy / count / SAMPLE_H } : null,
+    }
 }
 
 function fmtMs(ms) {
@@ -66,11 +157,40 @@ export default function CameraPanel() {
     const [diffScore, setDiffScore] = useState(0)
     const [countdown, setCountdown] = useState(null)
     const [scanStatus, setScanStatus] = useState(STATUS_IDLE)
-    const [apiKey, setApiKey] = useState(() => localStorage.getItem('stifficiency_gemini_key') || import.meta.env.VITE_GEMINI_API_KEY || '')
+    const [apiKey, setApiKey] = useState(() => localStorage.getItem('stifficiency_gemini_key') || import.meta.env.VITE_GEMINI_API_KEY || 'AIzaSyD-GJXGcl9TIfvegUk4eVVq2-dBsa-UJOQ')
     const [keyInput, setKeyInput] = useState('')
     const [showKeyInput, setShowKeyInput] = useState(false)
 
-    const { addItem } = useItems()
+    const { items, addItem, setItemZone } = useItems()
+    const { zones } = useZones()
+
+    // ── Voice state ───────────────────────────────────────────────
+    const [voiceStatus, setVoiceStatus] = useState('loading') // 'loading'|'listening'|'unavailable'
+    const [voiceTranscript, setVoiceTranscript] = useState('')
+    const [audioUnlocked, setAudioUnlocked] = useState(false)
+    const [audioTestStatus, setAudioTestStatus] = useState(null) // null | 'testing' | 'ok' | 'fail'
+
+    // ── Tracking state ────────────────────────────────────────────
+    const [trackingItemId, setTrackingItemId] = useState(null)
+    const [activeZoneId, setActiveZoneId] = useState(null)
+    const [placedZone, setPlacedZone] = useState(null)
+
+    // Stable refs so checkMotion always reads the latest values without deps changing
+    const trackingRef = useRef({ itemId: null, zones: [] })
+    const setItemZoneRef = useRef(setItemZone)
+    const zoneHitCountRef = useRef(0)
+    const zoneHitIdRef = useRef(null)
+
+    // Keep refs in sync every render
+    trackingRef.current.itemId = trackingItemId
+    trackingRef.current.zones = zones
+    setItemZoneRef.current = setItemZone
+
+    // Stable refs for items and callbacks (used inside voice recognition)
+    const itemsRef = useRef(items)
+    itemsRef.current = items
+    const handleScanRef = useRef(null)
+    const findItemRef = useRef(null)
 
     // ── Pixel draw (idle) ─────────────────────────────────────────
     const startPixelDraw = useCallback(() => {
@@ -93,13 +213,67 @@ export default function CameraPanel() {
         return ctx.getImageData(0, 0, SAMPLE_W, SAMPLE_H)
     }, [])
 
+    // ── Find item by voice query ──────────────────────────────────
+    const findItem = useCallback(async (query) => {
+        const q = query.toLowerCase().trim()
+        // Split into meaningful words (skip tiny filler words)
+        const words = q.split(/\s+/).filter(w => w.length > 1 && !['a','an','the','my','some'].includes(w))
+        const allItems = itemsRef.current
+        const allZones = trackingRef.current.zones
+
+        const scoreItem = (item) => {
+            const haystack = [
+                item.name, item.category, item.item_type,
+                item.distinguishing_features?.brand,
+                item.distinguishing_features?.color,
+            ].filter(Boolean).join(' ').toLowerCase()
+            if (haystack.includes(q)) return words.length + 2   // exact phrase — top score
+            return words.filter(w => haystack.includes(w)).length // word-level partial
+        }
+
+        // Require at least 1 word to match (very permissive — handles plurals, extra words, etc.)
+        const scored = allItems
+            .map(item => ({ item, s: scoreItem(item) }))
+            .filter(({ s }) => s >= 1)
+            .sort((a, b) => b.s - a.s)
+
+        const found = scored.map(({ item }) => item)
+
+        let text
+        if (found.length === 0) {
+            text = `I couldn't find ${query} in the inventory.`
+        } else if (found.length === 1) {
+            const zone = allZones.find(z => z.id === found[0].zone)
+            text = zone
+                ? `${found[0].name} is in ${zone.label}.`
+                : `${found[0].name} is in the inventory but hasn't been placed in a zone yet.`
+        } else {
+            const placed = found.filter(i => i.zone)
+            const unplaced = found.filter(i => !i.zone)
+            const parts = []
+            placed.forEach(item => {
+                const zone = allZones.find(z => z.id === item.zone)
+                if (zone) parts.push(`${item.name} in ${zone.label}`)
+            })
+            if (unplaced.length > 0) parts.push(`${unplaced.length} not yet placed`)
+            text = parts.length > 0
+                ? `Found ${found.length} items: ${parts.join(', ')}.`
+                : `Found ${found.length} matches for ${query}, none assigned to a zone yet.`
+        }
+
+        await speakText(text)
+    }, [])
+
     // ── Motion check ──────────────────────────────────────────────
+    // (keep handleScanRef/findItemRef current — assigned after handleScan is defined below)
+
     const checkMotion = useCallback(() => {
         const cur = captureFrame()
         if (!cur) return
         if (prevFrame.current) {
-            const score = frameDiff(prevFrame.current, cur)
+            const { score, centroid } = frameDiffWithCentroid(prevFrame.current, cur)
             setDiffScore(Math.round(score))
+
             if (score > MOTION_THRESHOLD) {
                 lastMotion.current = Date.now()
                 setMode(prev => {
@@ -107,9 +281,44 @@ export default function CameraPanel() {
                         stopPixelDraw()
                         clearInterval(intervalRef.current)
                         intervalRef.current = setInterval(checkMotion, ACTIVE_INTERVAL_MS)
+                        speakText('hey')
                     }
                     return 'active'
                 })
+            }
+
+            // ── Zone placement tracking ───────────────────────────
+            const { itemId, zones: currentZones } = trackingRef.current
+            if (itemId && centroid && currentZones.length > 0) {
+                const hit = currentZones.find(z =>
+                    centroid.x >= z.x && centroid.x <= z.x + z.w &&
+                    centroid.y >= z.y && centroid.y <= z.y + z.h
+                ) ?? null
+
+                setActiveZoneId(hit?.id ?? null)
+
+                if (hit) {
+                    if (zoneHitIdRef.current === hit.id) {
+                        zoneHitCountRef.current++
+                        if (zoneHitCountRef.current >= ZONE_HIT_CONFIRM) {
+                            // Confirmed — assign item to zone
+                            setItemZoneRef.current(itemId, hit.id)
+                            trackingRef.current.itemId = null
+                            setTrackingItemId(null)
+                            setActiveZoneId(null)
+                            setPlacedZone({ label: hit.label, color: hit.color })
+                            zoneHitCountRef.current = 0
+                            zoneHitIdRef.current = null
+                            setTimeout(() => setPlacedZone(null), 3500)
+                        }
+                    } else {
+                        zoneHitIdRef.current = hit.id
+                        zoneHitCountRef.current = 1
+                    }
+                } else {
+                    zoneHitCountRef.current = 0
+                    zoneHitIdRef.current = null
+                }
             }
         }
         prevFrame.current = cur
@@ -131,6 +340,103 @@ export default function CameraPanel() {
         }, 1000)
         return () => clearInterval(tickRef.current)
     }, [mode, checkMotion, startPixelDraw])
+
+    // ── Voice recognition ─────────────────────────────────────────
+    useEffect(() => {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+        if (!SR) {
+            console.warn('[Voice] SpeechRecognition not supported in this browser (use Chrome/Edge)')
+            setVoiceStatus('unavailable')
+            return
+        }
+
+        let recognition = null
+        let suppressRestart = false
+
+        async function startRecognition() {
+            // Explicitly request microphone permission first
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+                stream.getTracks().forEach(t => t.stop()) // we only needed the permission grant
+                console.log('[Voice] Microphone permission granted')
+            } catch (err) {
+                console.error('[Voice] Microphone permission denied:', err)
+                setVoiceStatus('unavailable')
+                return
+            }
+
+            recognition = new SR()
+            recognition.continuous = true
+            recognition.interimResults = false
+            recognition.lang = 'en-US'
+
+            recognition.onstart = () => {
+                console.log('[Voice] Recognition started, listening…')
+                setVoiceStatus('listening')
+            }
+
+            recognition.onresult = (event) => {
+                const result = event.results[event.results.length - 1]
+                if (!result.isFinal) return
+                const transcript = result[0].transcript.trim().toLowerCase()
+                console.log('[Voice] Heard:', transcript, isSpeaking ? '(ignored — TTS playing)' : '')
+
+                // Ignore anything heard while TTS is playing (prevents feedback loops)
+                if (isSpeaking) return
+
+                setVoiceTranscript(transcript)
+                setTimeout(() => setVoiceTranscript(''), 2500)
+
+                if (/\bscan\s+this\b/.test(transcript)) {
+                    console.log('[Voice] Triggering scan')
+                    handleScanRef.current?.()
+                } else {
+                    const findMatch = transcript.match(/(?:find|locate|where(?:'s| is)(?: (?:my|the))?)\s+(.+)/)
+                    if (findMatch) {
+                        console.log('[Voice] Find query:', findMatch[1])
+                        findItemRef.current?.(findMatch[1].trim())
+                    }
+                }
+            }
+
+            recognition.onerror = (e) => {
+                console.warn('[Voice] Recognition error:', e.error)
+                if (e.error === 'not-allowed') {
+                    setVoiceStatus('unavailable')
+                    suppressRestart = true
+                }
+            }
+
+            recognition.onend = () => {
+                console.log('[Voice] Recognition ended, restarting…')
+                if (!suppressRestart) {
+                    setTimeout(() => {
+                        try { recognition.start() } catch (err) { console.warn('[Voice] Restart failed:', err) }
+                    }, 300)
+                }
+            }
+
+            recognition.start()
+        }
+
+        startRecognition()
+
+        return () => {
+            suppressRestart = true
+            try { recognition?.stop() } catch { }
+            setVoiceStatus('unavailable')
+        }
+    }, []) // stable via refs
+
+    // ── Tracking timeout ──────────────────────────────────────────
+    useEffect(() => {
+        if (!trackingItemId) return
+        const t = setTimeout(() => {
+            setTrackingItemId(null)
+            setActiveZoneId(null)
+        }, TRACKING_TIMEOUT_MS)
+        return () => clearTimeout(t)
+    }, [trackingItemId])
 
     // ── Camera start ──────────────────────────────────────────────
     const startCamera = useCallback(async () => {
@@ -172,6 +478,7 @@ export default function CameraPanel() {
         try {
             // 1. Capture full-res frame
             setScanStatus({ state: 'capturing', message: 'Capturing frame…' })
+            speakText('Scanning')
             await new Promise(r => setTimeout(r, 80))  // let UI update
 
             const canvas = captureRef.current
@@ -208,9 +515,15 @@ export default function CameraPanel() {
             if (!jsonMatch) throw new Error('Could not parse item data from response')
             const itemData = JSON.parse(jsonMatch[0])
 
-            // 4. Save item
-            addItem(itemData)
-            setScanStatus({ state: 'success', message: `✓ ${itemData.name} scanned` })
+            // 4. Save item + start zone placement tracking
+            const newId = addItem(itemData)
+            if (zones.length > 0) {
+                setTrackingItemId(newId)
+                zoneHitCountRef.current = 0
+                zoneHitIdRef.current = null
+            }
+            setScanStatus({ state: 'success', message: `✓ ${itemData.name} scanned${zones.length > 0 ? ' — place it in a zone' : ''}` })
+            speakText(`${itemData.name} scanned`)
 
         } catch (e) {
             console.error('Scan error:', e)
@@ -220,6 +533,10 @@ export default function CameraPanel() {
             setTimeout(() => setScanStatus(STATUS_IDLE), 4000)
         }
     }, [apiKey, scanStatus.state, addItem])
+
+    // Keep voice-recognition refs current every render
+    handleScanRef.current = handleScan
+    findItemRef.current = findItem
 
     // Save API key
     const saveApiKey = () => {
@@ -234,8 +551,12 @@ export default function CameraPanel() {
     const isActive = mode === 'active'
     const isScanning = scanStatus.state === 'scanning' || scanStatus.state === 'capturing'
 
+    const handleRootClick = useCallback(() => {
+        unlockAudio().then(() => setAudioUnlocked(true))
+    }, [])
+
     return (
-        <div className="camera-root">
+        <div className="camera-root" onClick={handleRootClick}>
             {/* Hidden canvases */}
             <canvas ref={samplerRef} width={SAMPLE_W} height={SAMPLE_H} style={{ display: 'none' }} />
             <canvas ref={captureRef} style={{ display: 'none' }} />
@@ -286,6 +607,61 @@ export default function CameraPanel() {
                 {/* Countdown */}
                 {isActive && countdown !== null && (
                     <div className="countdown-badge">Idle in {fmtMs(countdown)}</div>
+                )}
+
+                {/* Zone hitbox overlays — visible only while tracking */}
+                {trackingItemId && zones.length > 0 && (
+                    <div className="zone-overlay-layer">
+                        {zones.map(zone => (
+                            <div
+                                key={zone.id}
+                                className={`zone-hit-rect ${activeZoneId === zone.id ? 'zone-hit-active' : ''}`}
+                                style={{
+                                    left: `${zone.x * 100}%`,
+                                    top: `${zone.y * 100}%`,
+                                    width: `${zone.w * 100}%`,
+                                    height: `${zone.h * 100}%`,
+                                    borderColor: zone.color,
+                                    '--zone-color': zone.color,
+                                }}
+                            >
+                                <span className="zone-hit-label" style={{ background: zone.color }}>
+                                    {zone.label}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Tracking badge */}
+                {trackingItemId && (
+                    <div className="tracking-badge">
+                        <span className="mini-spinner" style={{ marginRight: 6 }} />
+                        Place item in a zone…
+                    </div>
+                )}
+
+                {/* Audio unlock nudge — shows until first click */}
+                {!audioUnlocked && camReady && (
+                    <div className="audio-unlock-nudge">
+                        Click anywhere to enable audio
+                    </div>
+                )}
+
+                {/* Voice transcript flash */}
+                {voiceTranscript && (
+                    <div className="voice-transcript-badge">
+                        <span className="voice-transcript-icon">🎙</span>
+                        {voiceTranscript}
+                    </div>
+                )}
+
+                {/* Placement confirmed badge */}
+                {placedZone && (
+                    <div className="placed-badge" style={{ '--zone-color': placedZone.color }}>
+                        <span className="placed-check">✓</span>
+                        Placed in <strong>{placedZone.label}</strong>
+                    </div>
                 )}
             </div>
 
@@ -339,6 +715,15 @@ export default function CameraPanel() {
                 </div>
                 <div className="footer-divider" />
 
+                {/* Mic status */}
+                <div className={`mic-pill mic-pill-${voiceStatus}`}>
+                    {voiceStatus === 'listening' ? '🎙' : '🎙✕'}
+                    <span className="mic-pill-label">
+                        {voiceStatus === 'listening' ? 'Listening' : voiceStatus === 'unavailable' ? 'No mic' : '…'}
+                    </span>
+                </div>
+                <div className="footer-divider" />
+
                 {/* Scan + key buttons */}
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 4 }}>
                     <button
@@ -348,6 +733,23 @@ export default function CameraPanel() {
                         disabled={!camReady || isScanning}
                     >
                         {isScanning ? <><span className="mini-spinner" /> Scanning…</> : '📸 Scan Item'}
+                    </button>
+                    <button
+                        className={`key-btn audio-test-btn-${audioTestStatus ?? 'idle'}`}
+                        onClick={async () => {
+                            setAudioTestStatus('testing')
+                            try {
+                                await speakText('hey')
+                                setAudioTestStatus('ok')
+                            } catch {
+                                setAudioTestStatus('fail')
+                            }
+                            setTimeout(() => setAudioTestStatus(null), 3000)
+                        }}
+                        title="Test ElevenLabs audio"
+                        disabled={audioTestStatus === 'testing'}
+                    >
+                        {audioTestStatus === 'testing' ? <span className="mini-spinner" /> : audioTestStatus === 'ok' ? '🔊✓' : audioTestStatus === 'fail' ? '🔊✗' : '🔊'}
                     </button>
                     <button
                         id="api-key-btn"

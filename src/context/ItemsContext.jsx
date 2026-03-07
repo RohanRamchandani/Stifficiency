@@ -16,12 +16,14 @@ export function ItemsProvider({ children }) {
     }, [items])
 
     const addItem = (item) => {
+        const id = crypto.randomUUID()
         setItems(prev => [{
             ...item,
-            id: crypto.randomUUID(),
+            id,
             zone: null,
             timestamp: new Date().toISOString(),
         }, ...prev])
+        return id
     }
 
     const removeItem = (id) => setItems(prev => prev.filter(i => i.id !== id))
