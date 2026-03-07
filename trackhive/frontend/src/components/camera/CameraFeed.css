@@ -1,0 +1,101 @@
+/* ───── Camera Feed Layout ───── */
+.camera-feed-wrapper {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #0a0e1a;
+  overflow: hidden;
+}
+
+/* Header */
+.camera-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  background: linear-gradient(180deg, rgba(10, 14, 26, 0.85) 0%, transparent 100%);
+}
+.camera-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.logo-icon {
+  font-size: 1.4rem;
+}
+.logo-text {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #6366f1, #a78bfa, #06b6d4);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Viewport */
+.camera-viewport {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.camera-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 0;
+}
+
+/* Scan-line effect */
+.scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(34, 197, 94, 0.7), transparent);
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+/* Activated when parent wrapper has a scanning-mode ancestor */
+:global(.mode-scanning-active) .scan-line,
+.camera-feed-wrapper[data-mode="scanning"] .scan-line {
+  opacity: 1;
+  animation: sweep 2.4s ease-in-out infinite;
+}
+@keyframes sweep {
+  0%   { top: 0%; }
+  50%  { top: 100%; }
+  100% { top: 0%; }
+}
+
+/* Controls dock */
+.camera-controls-dock {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+}
+
+/* Subtle vignette around camera */
+.camera-viewport::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(10, 14, 26, 0.5) 100%);
+}
