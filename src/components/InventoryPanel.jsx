@@ -52,7 +52,7 @@ function ItemCard({ item, onRemove, highlighted, zones }) {
     return (
         <div
             ref={ref}
-            className={`item-card ${highlighted ? 'item-card-highlighted' : ''}`}
+            className={`item-card ${highlighted ? 'item-card-highlighted' : ''} ${item.status === 'out' ? 'item-card-removed' : ''}`}
             onClick={() => setExpanded(e => !e)}
         >
             <div className="item-card-header">
@@ -112,6 +112,7 @@ export default function InventoryPanel() {
     const { zones } = useZones()
     const { highlightedItemId, highlightedZoneId, zoneFilter, clearZoneFilter } = useSearch()
     const [tab, setTab] = useState('category')
+    const [showRemoved, setShowRemoved] = useState(false)
 
     // Auto-switch to location tab when a zone filter activates
     useEffect(() => {
@@ -123,9 +124,12 @@ export default function InventoryPanel() {
         if (highlightedZoneId) setTab('location')
     }, [highlightedZoneId])
 
+    const activeItems = showRemoved ? items : items.filter(i => i.status !== 'out')
+    const removedCount = items.filter(i => i.status === 'out').length
+
     const filteredItems = zoneFilter
-        ? items.filter(i => i.zone === zoneFilter)
-        : items
+        ? activeItems.filter(i => i.zone === zoneFilter)
+        : activeItems
 
     const byCategory = groupBy(filteredItems, 'category', 'Uncategorized')
     const byZone     = groupBy(filteredItems, 'zone')
@@ -155,6 +159,15 @@ export default function InventoryPanel() {
                     >
                         By Location
                     </button>
+                    {removedCount > 0 && (
+                        <button
+                            className={`inv-tab inv-tab-removed ${showRemoved ? 'inv-tab-active' : ''}`}
+                            onClick={() => setShowRemoved(s => !s)}
+                            title={showRemoved ? 'Hide removed items' : 'Show removed items'}
+                        >
+                            {showRemoved ? '🗑 Hide removed' : `🗑 Removed (${removedCount})`}
+                        </button>
+                    )}
                 </div>
             </div>
 

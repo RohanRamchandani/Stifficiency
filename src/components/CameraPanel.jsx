@@ -142,7 +142,7 @@ export default function CameraPanel() {
     const [showKeyInput, setShowKeyInput] = useState(false)
     const [showCalModal, setShowCalModal] = useState(false)
 
-    const { items, addItem, setItemZone } = useItems()
+    const { items, addItem, setItemZone, softRemoveItem } = useItems()
     const { zones } = useZones()
     const {
         calibration, dwellMs, graceMs, depthGating, setDepthGating,
@@ -179,6 +179,19 @@ export default function CameraPanel() {
     itemsRef.current     = items
     const handleScanRef  = useRef(null)
     const findItemRef    = useRef(null)
+    const removeRef      = useRef(null)
+
+    // ── Remove candidate (confirmation overlay) ───────────────────
+    const [removeCandidate, setRemoveCandidate] = useState(null)
+    const removeCandidateRef = useRef(null)       // kept in sync — readable from closures
+    removeCandidateRef.current = removeCandidate
+    const softRemoveRef = useRef(softRemoveItem)
+    softRemoveRef.current = softRemoveItem
+
+    // ── MediaPipe interval (tab-switch safe) ──────────────────────
+    // requestAnimationFrame is throttled by Chrome when display:none.
+    // A setInterval keeps processFrame() ticking regardless of visibility.
+    const mpIntervalRef = useRef(null)
 
     // ── Pixel draw (idle) ─────────────────────────────────────────
     const startPixelDraw = useCallback(() => {
@@ -302,6 +315,28 @@ export default function CameraPanel() {
     const { setFindResult, setZoneFilter, highlightedZoneId, zoneFilter } = useSearch()
     const [searchText, setSearchText] = useState('')
 
+    // ── Find / Remove helpers ─────────────────────────────────────
+    /** Score an item against a query string — used by both findItem and remove. */
+    const scoreItem = useCallback((item, q) => {
+        const words = q.split(/\s+/).filter(w => w.length > 1 && !['a','an','the','my','some','this','item'].includes(w))
+        const haystack = [item.name, item.category, item.item_type,
+            item.distinguishing_features?.brand, item.distinguishing_features?.color]
+            .filter(Boolean).join(' ').toLowerCase()
+        if (haystack.includes(q)) return words.length + 2
+        return words.filter(w => haystack.includes(w)).length
+    }, [])
+
+    /** Find best-matching active (status:'in') item for removal. */
+    const findRemoveCandidate = useCallback((query) => {
+        const q = query.toLowerCase().trim()
+        const activeItems = itemsRef.current.filter(i => i.status !== 'out')
+        const scored = activeItems
+            .map(item => ({ item, s: scoreItem(item, q) }))
+            .filter(({ s }) => s >= 1)
+            .sort((a, b) => b.s - a.s)
+        return scored[0]?.item ?? null
+    }, [scoreItem])
+
     // ── Find item by voice or text ────────────────────────────────
     const findItem = useCallback(async (query) => {
         const q     = query.toLowerCase().trim()
@@ -357,7 +392,20 @@ export default function CameraPanel() {
         await speakText(text)
     }, [setFindResult, setZoneFilter])
 
-    // ── Motion check (pixel-diff) ─────────────────────────────────
+    // ── Remove item by voice (name-based, no scan) ────────────────
+    const removeByName = useCallback(async (query) => {
+        const match = findRemoveCandidate(query)
+        if (!match) {
+            await speakText(`I couldn't find ${query} in the inventory.`)
+            return
+        }
+        const allZones = trackingRef.current.zones
+        const zone = allZones.find(z => z.id === match.zone)
+        setRemoveCandidate({ item: match, zone: zone ?? null })
+        await speakText(`Found ${match.name}${zone ? ` in ${zone.label}` : ''}. Say confirm or cancel.`)
+    }, [findRemoveCandidate])
+
+    removeRef.current = removeByName
     const checkMotion = useCallback(() => {
         const cur = captureFrame()
         if (!cur) return
@@ -422,11 +470,32 @@ export default function CameraPanel() {
                 if (isSpeaking) return
                 setVoiceTranscript(transcript)
                 setTimeout(() => setVoiceTranscript(''), 2500)
-                // Scan triggers: "scan this", "scan", "scan item", "take a picture", "capture"
-                if (/\b(?:scan(?:\s+(?:this|it|item|now))?|take\s+a?\s*(?:picture|photo|picture)|capture)\b/.test(transcript)) {
+
+                // ── Removal confirmation response ──────────────────
+                if (removeCandidateRef.current) {
+                    if (/\b(yes|confirm|yeah|yep|do it|remove it)\b/.test(transcript)) {
+                        const { item, zone } = removeCandidateRef.current
+                        setRemoveCandidate(null)
+                        softRemoveRef.current(item.id)
+                        speakText(`${item.name} removed${zone ? ` from ${zone.label}` : ''}.`)
+                    } else if (/\b(no|cancel|nope|stop|nevermind|never mind)\b/.test(transcript)) {
+                        setRemoveCandidate(null)
+                        speakText('Cancelled.')
+                    }
+                    return
+                }
+
+                // Scan triggers
+                if (/\b(?:scan(?:\s+(?:this|it|item|now))?|take\s+a?\s*(?:picture|photo)|capture)\b/.test(transcript)) {
                     handleScanRef.current?.()
                 } else {
-                    // Find triggers: "find X", "locate X", "where is X", "where's my X"
+                    // Remove triggers: "remove X", "take out X", "removing X"
+                    const removeMatch = transcript.match(/\b(?:remove|removing|take out|taken out)\s+(?:the\s+|my\s+)?(.+)/)
+                    if (removeMatch) {
+                        removeRef.current?.(removeMatch[1].trim())
+                        return
+                    }
+                    // Find triggers
                     const findMatch = transcript.match(/(?:find|locate|where(?:'s| is)(?: (?:my|the))?)\s+(.+)/)
                     if (findMatch) findItemRef.current?.(findMatch[1].trim())
                 }
@@ -449,6 +518,19 @@ export default function CameraPanel() {
         const t = setTimeout(() => { setTrackingItemId(null); setActiveZoneId(null) }, 30_000)
         return () => clearTimeout(t)
     }, [trackingItemId])
+
+    // ── MediaPipe keep-alive interval ─────────────────────────────
+    // Runs processFrame + tick independently of the RAF so MediaPipe
+    // never stalls when the camera panel is hidden (display:none).
+    useEffect(() => {
+        mpIntervalRef.current = setInterval(() => {
+            const ht = handTrackerRef.current
+            if (!ht) return
+            ht.processFrame()
+            ht.tick(graceMs)
+        }, 100)
+        return () => clearInterval(mpIntervalRef.current)
+    }, [handTrackerRef, graceMs])
 
     // ── Camera start ───────────────────────────────────────────────
     const startCamera = useCallback(async () => {
@@ -699,6 +781,45 @@ export default function CameraPanel() {
                     <div className="placed-badge" style={{ '--zone-color': placedZone.color }}>
                         <span className="placed-check">✓</span>
                         Placed in <strong>{placedZone.label}</strong>
+                    </div>
+                )}
+
+                {/* Remove confirmation overlay */}
+                {removeCandidate && (
+                    <div className="remove-confirm-overlay">
+                        <div className="remove-confirm-card">
+                            <div className="remove-confirm-header">
+                                <span className="remove-confirm-icon">🗑️</span>
+                                <span className="remove-confirm-title">Remove item?</span>
+                            </div>
+                            <div className="remove-confirm-item">
+                                <span className="remove-item-name">{removeCandidate.item.name}</span>
+                                {removeCandidate.item.item_type && (
+                                    <span className="remove-item-type">{removeCandidate.item.item_type}</span>
+                                )}
+                            </div>
+                            {removeCandidate.zone && (
+                                <div className="remove-item-zone" style={{ '--zone-color': removeCandidate.zone.color }}>
+                                    <span className="remove-zone-dot" style={{ background: removeCandidate.zone.color }} />
+                                    {removeCandidate.zone.label}
+                                </div>
+                            )}
+                            <div className="remove-confirm-actions">
+                                <button
+                                    className="remove-btn-confirm"
+                                    onClick={() => {
+                                        softRemoveItem(removeCandidate.item.id)
+                                        speakText(`${removeCandidate.item.name} removed${removeCandidate.zone ? ` from ${removeCandidate.zone.label}` : ''}.`)
+                                        setRemoveCandidate(null)
+                                    }}
+                                >✓ Confirm</button>
+                                <button
+                                    className="remove-btn-cancel"
+                                    onClick={() => { setRemoveCandidate(null); speakText('Cancelled.') }}
+                                >✕ Cancel</button>
+                            </div>
+                            <p className="remove-confirm-hint">Say <strong>confirm</strong> or <strong>cancel</strong></p>
+                        </div>
                     </div>
                 )}
             </div>
