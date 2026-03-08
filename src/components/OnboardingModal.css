@@ -1,0 +1,238 @@
+.ob-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.72);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    padding: 16px;
+}
+
+.ob-card {
+    background: #1a1a2e;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    padding: 36px 40px 32px;
+    max-width: 560px;
+    width: 100%;
+    position: relative;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+    animation: ob-enter 0.25s ease;
+}
+
+@keyframes ob-enter {
+    from { opacity: 0; transform: translateY(16px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Step dots */
+.ob-dots {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-bottom: 32px;
+}
+
+.ob-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.15);
+    transition: background 0.2s, transform 0.2s;
+}
+
+.ob-dot-active {
+    background: #7c6af7;
+    transform: scale(1.3);
+}
+
+.ob-dot-done {
+    background: #34d399;
+}
+
+/* Step content */
+.ob-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    animation: ob-enter 0.2s ease;
+}
+
+.ob-icon {
+    font-size: 40px;
+    margin-bottom: 16px;
+    line-height: 1;
+}
+
+.ob-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: #e2e2f0;
+    margin: 0 0 12px;
+}
+
+.ob-body {
+    font-size: 14px;
+    color: #9898b8;
+    line-height: 1.6;
+    max-width: 440px;
+    margin: 0 0 8px;
+}
+
+.ob-body.secondary {
+    font-size: 13px;
+    color: #6868a0;
+    margin-bottom: 16px;
+}
+
+/* Done badge */
+.ob-done-badge {
+    display: inline-block;
+    background: rgba(52, 211, 153, 0.15);
+    border: 1px solid rgba(52, 211, 153, 0.35);
+    color: #34d399;
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 8px 0 16px;
+}
+
+/* Steps list (zone setup) */
+.ob-steps-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    text-align: left;
+    width: 100%;
+    max-width: 400px;
+    margin: 12px auto 20px;
+}
+
+.ob-step-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    font-size: 13px;
+    color: #9898b8;
+    line-height: 1.4;
+}
+
+.ob-step-num {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(124, 106, 247, 0.2);
+    border: 1px solid rgba(124, 106, 247, 0.4);
+    color: #7c6af7;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Voice commands table */
+.ob-commands {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    margin: 12px 0 16px;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.ob-cmd-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 12px;
+    align-items: start;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+}
+
+.ob-cmd-trigger {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    color: #7c6af7;
+    white-space: nowrap;
+    padding: 2px 6px;
+    background: rgba(124, 106, 247, 0.12);
+    border-radius: 4px;
+}
+
+.ob-cmd-result {
+    font-size: 12px;
+    color: #8080a8;
+    line-height: 1.5;
+    padding-top: 2px;
+}
+
+.ob-note {
+    font-size: 11px;
+    color: #555580;
+    margin: 0 0 16px;
+}
+
+/* Buttons */
+.ob-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    max-width: 320px;
+    margin-top: 4px;
+}
+
+.ob-btn-primary {
+    background: linear-gradient(135deg, #7c6af7, #6357d4);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 24px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.15s;
+    width: 100%;
+}
+
+.ob-btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+.ob-btn-primary:active { transform: translateY(0); }
+
+.ob-btn-ghost {
+    background: transparent;
+    color: #6060a0;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 10px 24px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    width: 100%;
+}
+
+.ob-btn-ghost:hover { color: #9898c0; border-color: rgba(255, 255, 255, 0.16); }
+
+/* Back button */
+.ob-back {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    background: transparent;
+    border: none;
+    color: #5555a0;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.15s;
+    padding: 4px 8px;
+}
+
+.ob-back:hover { color: #9898c0; }

@@ -12,7 +12,7 @@ import './CameraPanel.css'
 const IDLE_INTERVAL_MS   = 500    // poll twice per second when idle
 const ACTIVE_INTERVAL_MS = 120
 const MOTION_THRESHOLD   = 15    // more sensitive — triggers on light movement
-const IDLE_TIMEOUT_MS    = 3 * 60 * 1000
+const IDLE_TIMEOUT_MS   = 30 * 1000
 const SAMPLE_W = 64, SAMPLE_H = 48
 const PIXEL_W  = 96, PIXEL_H  = 72
 
@@ -447,23 +447,30 @@ export default function CameraPanel() {
     }, [mode, checkMotion, startPixelDraw])
 
     // ── Voice recognition ──────────────────────────────────────────
+    // We keep a ref to the recognition instance and control its lifecycle
+    // externally so we can start/stop it based on active vs idle mode.
+    const recognitionRef    = useRef(null)
+    const suppressVoiceRef  = useRef(false)
+    const voiceReadyRef     = useRef(false)  // true once mic permission granted
+
+    // Initialise permission + build the recognition object once on mount
     useEffect(() => {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition
         if (!SR) { setVoiceStatus('unavailable'); return }
 
-        let recognition = null
-        let suppressRestart = false
-
-        async function startRecognition() {
+        async function init() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
                 stream.getTracks().forEach(t => t.stop())
             } catch { setVoiceStatus('unavailable'); return }
 
-            recognition = new SR()
-            recognition.continuous = true; recognition.interimResults = false; recognition.lang = 'en-US'
-            recognition.onstart  = () => setVoiceStatus('listening')
-            recognition.onresult = (event) => {
+            const r = new SR()
+            r.continuous = true
+            r.interimResults = false
+            r.lang = 'en-US'
+
+            r.onstart  = () => setVoiceStatus('listening')
+            r.onresult = (event) => {
                 const result = event.results[event.results.length - 1]
                 if (!result.isFinal) return
                 const transcript = result[0].transcript.trim().toLowerCase()
@@ -489,28 +496,50 @@ export default function CameraPanel() {
                 if (/\b(?:scan(?:\s+(?:this|it|item|now))?|take\s+a?\s*(?:picture|photo)|capture)\b/.test(transcript)) {
                     handleScanRef.current?.()
                 } else {
-                    // Remove triggers: "remove X", "take out X", "removing X"
                     const removeMatch = transcript.match(/\b(?:remove|removing|take out|taken out)\s+(?:the\s+|my\s+)?(.+)/)
-                    if (removeMatch) {
-                        removeRef.current?.(removeMatch[1].trim())
-                        return
-                    }
-                    // Find triggers
+                    if (removeMatch) { removeRef.current?.(removeMatch[1].trim()); return }
                     const findMatch = transcript.match(/(?:find|locate|where(?:'s| is)(?: (?:my|the))?)\s+(.+)/)
                     if (findMatch) findItemRef.current?.(findMatch[1].trim())
                 }
             }
-            recognition.onerror = (e) => {
-                if (e.error === 'not-allowed') { setVoiceStatus('unavailable'); suppressRestart = true }
+            r.onerror = (e) => {
+                if (e.error === 'not-allowed') { setVoiceStatus('unavailable'); suppressVoiceRef.current = true }
             }
-            recognition.onend = () => {
-                if (!suppressRestart) setTimeout(() => { try { recognition.start() } catch { } }, 300)
+            // Auto-restart only while in active mode
+            r.onend = () => {
+                if (!suppressVoiceRef.current && recognitionRef.current === r) {
+                    // Will be restarted by the mode effect if still active
+                    setVoiceStatus('idle')
+                }
             }
-            recognition.start()
+
+            recognitionRef.current = r
+            voiceReadyRef.current  = true
         }
-        startRecognition()
-        return () => { suppressRestart = true; try { recognition?.stop() } catch { }; setVoiceStatus('unavailable') }
+
+        init()
+        return () => {
+            suppressVoiceRef.current = true
+            try { recognitionRef.current?.stop() } catch {}
+            setVoiceStatus('unavailable')
+        }
     }, [])
+
+    // ── Tie voice lifecycle to active / idle mode ──────────────────
+    useEffect(() => {
+        if (!voiceReadyRef.current || suppressVoiceRef.current) return
+        const r = recognitionRef.current
+        if (!r) return
+
+        if (mode === 'active') {
+            // Fresh start — clears any buffered audio from idle period
+            try { r.start() } catch {}
+        } else {
+            // Stop and drain the buffer
+            try { r.stop() } catch {}
+            setVoiceStatus('idle')
+        }
+    }, [mode])
 
     // ── Tracking timeout ───────────────────────────────────────────
     useEffect(() => {
@@ -854,32 +883,12 @@ export default function CameraPanel() {
                     <span className={`stat-val ${isActive ? 'val-active' : 'val-idle'}`}>{isActive ? 'Active' : 'Idle'}</span>
                 </div>
                 <div className="footer-divider" />
-                <div className="footer-stat">
-                    <span className="stat-label">Sample rate</span>
-                    <span className="stat-val">{isActive ? `${ACTIVE_INTERVAL_MS}ms` : `${IDLE_INTERVAL_MS}ms`}</span>
-                </div>
-                <div className="footer-divider" />
-                <div className="footer-stat">
-                    <span className="stat-label">Motion score</span>
-                    <span className={`stat-val ${diffScore > MOTION_THRESHOLD ? 'val-active' : ''}`}>
-                        {diffScore}<span className="stat-unit"> / {MOTION_THRESHOLD}</span>
-                    </span>
-                </div>
-                <div className="footer-divider" />
-                <div className="footer-stat" style={{ gap: 4 }}>
-                    <span className="stat-label">Depth</span>
-                    <label className="dep-toggle" title="Toggle depth gating">
-                        <input type="checkbox" checked={depthGating} onChange={e => setDepthGating(e.target.checked)} />
-                        <span className="dep-toggle-sl" />
-                    </label>
-                </div>
-                <div className="footer-divider" />
 
                 {/* Mic status */}
                 <div className={`mic-pill mic-pill-${voiceStatus}`}>
-                    {voiceStatus === 'listening' ? '🎙' : '🎙✕'}
+                    {voiceStatus === 'listening' ? '🎙' : '🎙'}
                     <span className="mic-pill-label">
-                        {voiceStatus === 'listening' ? 'Listening' : voiceStatus === 'unavailable' ? 'No mic' : '…'}
+                        {voiceStatus === 'listening' ? 'Listening' : voiceStatus === 'unavailable' ? 'No mic' : 'Mic idle'}
                     </span>
                 </div>
                 <div className="footer-divider" />

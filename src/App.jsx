@@ -6,6 +6,7 @@ import { SearchProvider } from './context/SearchContext'
 import CameraPanel from './components/CameraPanel'
 import BoundariesPanel from './components/BoundariesPanel'
 import InventoryPanel from './components/InventoryPanel'
+import OnboardingModal, { shouldShowOnboarding } from './components/OnboardingModal'
 import './App.css'
 
 const TABS = [
@@ -16,6 +17,7 @@ const TABS = [
 
 export default function App() {
     const [activeTab, setActiveTab] = useState('camera')
+    const [showOnboarding, setShowOnboarding] = useState(() => shouldShowOnboarding())
 
     return (
         <ZonesProvider>
@@ -61,6 +63,10 @@ export default function App() {
                                 </div>
 
                             </main>
+
+                            {showOnboarding && (
+                                <OnboardingModal onClose={() => setShowOnboarding(false)} />
+                            )}
                         </div>
                     </SearchProvider>
                 </DepthProvider>
