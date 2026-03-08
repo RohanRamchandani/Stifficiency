@@ -18,8 +18,9 @@ const PIXEL_W  = 96, PIXEL_H  = 72
 
 // ── ElevenLabs config ─────────────────────────────────────────
 const ELEVENLABS_API_KEY  = import.meta.env.VITE_ELEVENLABS_API_KEY || ''
-const ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'   // Rachel — natural, clear English
+const ELEVENLABS_VOICE_ID = '9BWtsMINqrJLrRacOk9x'   // Aria — warm, natural assistant voice
 const ELEVENLABS_URL      = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`
+console.log('[ElevenLabs] key present:', !!ELEVENLABS_API_KEY, '| voice:', ELEVENLABS_VOICE_ID)
 
 // ── Gemini config ──────────────────────────────────────────────
 const GEMINI_MODEL = 'gemini-2.5-flash'
@@ -485,88 +486,88 @@ export default function CameraPanel() {
     const recognitionRef    = useRef(null)
     const suppressVoiceRef  = useRef(false)
     const voiceReadyRef     = useRef(false)
-    const modeRef           = useRef(mode)      // always up-to-date mode for closures
+    const modeRef           = useRef(mode)
     modeRef.current = mode
 
-    // Initialise permission + recognition object once on mount
     useEffect(() => {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition
         if (!SR) { setVoiceStatus('unavailable'); return }
 
-        async function init() {
-            // Don't pre-check getUserMedia — SpeechRecognition handles its own
-            // permission request. A failed getUserMedia would immediately set
-            // voiceStatus 'unavailable' even when the mic is accessible.
-            const r = new SR()
-            r.continuous = true
-            r.interimResults = false
-            r.lang = 'en-US'
+        // Reset flags — critical for React strict-mode double-invoke and HMR
+        suppressVoiceRef.current = false
+        voiceReadyRef.current    = false
 
-            r.onstart  = () => setVoiceStatus('listening')
-            r.onresult = (event) => {
-                const result = event.results[event.results.length - 1]
-                if (!result.isFinal) return
-                const transcript = result[0].transcript.trim().toLowerCase()
-                if (isSpeaking) return
-                setVoiceTranscript(transcript)
-                setTimeout(() => setVoiceTranscript(''), 2500)
+        const r = new SR()
+        r.continuous     = true
+        r.interimResults = false
+        r.lang           = 'en-US'
+        recognitionRef.current = r
 
-                // ── Removal confirmation response ──────────────────
-                if (removeCandidateRef.current) {
-                    if (/\b(yes|confirm|yeah|yep|do it|remove it)\b/.test(transcript)) {
-                        const { item, zone } = removeCandidateRef.current
-                        setRemoveCandidate(null)
-                        softRemoveRef.current(item.id)
-                        speakText(`${item.name} removed${zone ? ` from ${zone.label}` : ''}.`)
-                    } else if (/\b(no|cancel|nope|stop|nevermind|never mind)\b/.test(transcript)) {
-                        setRemoveCandidate(null)
-                        speakText('Cancelled.')
-                    }
-                    return
-                }
+        // Mark ready + show idle immediately (no async wait needed)
+        voiceReadyRef.current = true
+        setVoiceStatus('idle')
 
-                // Scan triggers
-                if (/\b(?:scan(?:\s+(?:this|it|item|now))?|take\s+a?\s*(?:picture|photo)|capture)\b/.test(transcript)) {
-                    handleScanRef.current?.()
-                } else {
-                    const removeMatch = transcript.match(/\b(?:remove|removing|take out|taken out)\s+(?:the\s+|my\s+)?(.+)/)
-                    if (removeMatch) { removeRef.current?.(removeMatch[1].trim()); return }
-                    const findMatch = transcript.match(/(?:find|locate|where(?:'s| is)(?: (?:my|the))?)\s+(.+)/)
-                    if (findMatch) findItemRef.current?.(findMatch[1].trim())
+        r.onstart  = () => setVoiceStatus('listening')
+        r.onresult = (event) => {
+            const result = event.results[event.results.length - 1]
+            if (!result.isFinal) return
+            const transcript = result[0].transcript.trim().toLowerCase()
+            if (isSpeaking) return
+            setVoiceTranscript(transcript)
+            setTimeout(() => setVoiceTranscript(''), 2500)
+
+            if (removeCandidateRef.current) {
+                if (/\b(yes|confirm|yeah|yep|do it|remove it)\b/.test(transcript)) {
+                    const { item, zone } = removeCandidateRef.current
+                    setRemoveCandidate(null)
+                    softRemoveRef.current(item.id)
+                    speakText(`${item.name} removed${zone ? ` from ${zone.label}` : ''}.`)
+                } else if (/\b(no|cancel|nope|stop|nevermind|never mind)\b/.test(transcript)) {
+                    setRemoveCandidate(null)
+                    speakText('Cancelled.')
                 }
-            }
-            r.onerror = (e) => {
-                if (e.error === 'not-allowed') { setVoiceStatus('unavailable'); suppressVoiceRef.current = true }
-                // Other transient errors (network, aborted) — let onend handle restart
-            }
-            r.onend = () => {
-                if (suppressVoiceRef.current || recognitionRef.current !== r) return
-                if (modeRef.current === 'active') {
-                    // Auto-restart: recognition ends after each segment in continuous mode
-                    setTimeout(() => {
-                        if (suppressVoiceRef.current || modeRef.current !== 'active') return
-                        try { r.start() } catch {}
-                    }, 100)
-                } else {
-                    setVoiceStatus('idle')
-                }
+                return
             }
 
-            recognitionRef.current = r
-            voiceReadyRef.current  = true
-
-            // If mode is already active (async init completed after first motion),
-            // start immediately — the mode effect already ran and found voiceReadyRef false.
+            if (/\b(?:scan(?:\s+(?:this|it|item|now))?|take\s+a?\s*(?:picture|photo)|capture)\b/.test(transcript)) {
+                handleScanRef.current?.()
+            } else {
+                const removeMatch = transcript.match(/\b(?:remove|removing|take out|taken out)\s+(?:the\s+|my\s+)?(.+)/)
+                if (removeMatch) { removeRef.current?.(removeMatch[1].trim()); return }
+                const findMatch = transcript.match(/(?:find|locate|where(?:'s| is)(?: (?:my|the))?)\s+(.+)/)
+                if (findMatch) findItemRef.current?.(findMatch[1].trim())
+            }
+        }
+        r.onerror = (e) => {
+            console.warn('[Voice] error:', e.error)
+            if (e.error === 'not-allowed') {
+                setVoiceStatus('unavailable')
+                suppressVoiceRef.current = true
+            }
+        }
+        r.onend = () => {
+            if (suppressVoiceRef.current || recognitionRef.current !== r) return
             if (modeRef.current === 'active') {
-                try { r.start() } catch {}
+                setTimeout(() => {
+                    if (suppressVoiceRef.current || modeRef.current !== 'active') return
+                    try { r.start() } catch {}
+                }, 150)
+            } else {
+                setVoiceStatus('idle')
             }
         }
 
-        init()
+        // If already active when this effect runs, start right away
+        if (modeRef.current === 'active') {
+            try { r.start() } catch {}
+        }
+
         return () => {
-            suppressVoiceRef.current = true
-            try { recognitionRef.current?.stop() } catch {}
-            setVoiceStatus('unavailable')
+            // Only stop — do NOT set unavailable or suppress.
+            // The next init() run resets those flags itself.
+            try { r.abort() } catch {}
+            recognitionRef.current = null
+            voiceReadyRef.current  = false
         }
     }, [])
 
@@ -741,10 +742,18 @@ export default function CameraPanel() {
                 ) : null}
 
                 {isScanning && (
-                    <div className="cam-overlay center-col scanning-overlay">
+                    <div style={{
+                        position: 'absolute', inset: 0, zIndex: 15,
+                        display: 'flex', flexDirection: 'column',
+                        alignItems: 'center', justifyContent: 'center', gap: 14,
+                        background: 'rgba(0,0,0,0.45)',
+                        backdropFilter: 'blur(4px)',
+                    }}>
                         <div className="scan-pulse-ring" />
-                        <div className="spinner" />
-                        <p className="overlay-text" style={{ marginTop: 14, fontSize: 14, color: '#c4b8ff' }}>{scanStatus.message}</p>
+                        <div className="spinner" style={{ borderTopColor: '#fff', borderColor: 'rgba(255,255,255,0.2)' }} />
+                        <p style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: 500, letterSpacing: '-0.1px' }}>
+                            {scanStatus.message}
+                        </p>
                     </div>
                 )}
 
